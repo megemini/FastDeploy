@@ -543,7 +543,21 @@ std::vector<paddle::Tensor> AppendAttention(
     case paddle::DataType::BFLOAT16: return dispatch_by_template(bp16_dtype);
     case paddle::DataType::INT32: {
       if (compute_dtype == "bf16") {
-        return dispatch_by_template(bp16_dtype);
+        // Check compute capability for CC70 compatibility
+        int device_id;
+        cudaGetDevice(&device_id);
+        int compute_capability_major, compute_capability_minor;
+        cudaDeviceGetAttribute(&compute_capability_major, cudaDevAttrComputeCapabilityMajor, device_id);
+        cudaDeviceGetAttribute(&compute_capability_minor, cudaDevAttrComputeCapabilityMinor, device_id);
+        int compute_capability = compute_capability_major * 10 + compute_capability_minor;
+        
+        if (compute_capability >= 70 && compute_capability < 80) {
+          // For CC70-79, fall back to fp16 even if compute_dtype is bf16
+          return dispatch_by_template(fp16_dtype);
+        } else {
+          // For CC80+, use bf16 as requested
+          return dispatch_by_template(bp16_dtype);
+        }
       } else if (compute_dtype == "fp16") {
         return dispatch_by_template(fp16_dtype);
       } else {
@@ -676,18 +690,42 @@ std::vector<paddle::DataType> AppendAttentionInferDtype(
     const int speculate_max_draft_token_num,
     const bool causal,
     const bool speculate_decoder) {
-  if (compute_dtype == "bf16") {
-    if (out_linear_in_scale > 0.0) {
-      if (fabs(quant_max_bound - 127.0f) < 0.000001) {
-        return {paddle::DataType::INT8, paddle::DataType::BFLOAT16};
-      } else if (fabs(quant_max_bound - 448.0f) < 0.000001) {
-        return {paddle::DataType::FLOAT8_E4M3FN, paddle::DataType::BFLOAT16};
-      }else{
-        PD_THROW("Only supported attr of quant_max_bound in ['127.0', '448.0'].");
+    if (compute_dtype == "bf16") {
+      // Check compute capability for CC70 compatibility
+      int device_id;
+      cudaGetDevice(&device_id);
+      int compute_capability_major, compute_capability_minor;
+      cudaDeviceGetAttribute(&compute_capability_major, cudaDevAttrComputeCapabilityMajor, device_id);
+      cudaDeviceGetAttribute(&compute_capability_minor, cudaDevAttrComputeCapabilityMinor, device_id);
+      int compute_capability = compute_capability_major * 10 + compute_capability_minor;
+      
+      if (compute_capability >= 70 && compute_capability < 80) {
+        // For CC70-79, fall back to fp16 even if compute_dtype is bf16
+        if (out_linear_in_scale > 0.0) {
+          if (fabs(quant_max_bound - 127.0f) < 0.000001) {
+            return {paddle::DataType::INT8, paddle::DataType::FLOAT16};
+          } else if (fabs(quant_max_bound - 448.0f) < 0.000001) {
+            return {paddle::DataType::FLOAT8_E4M3FN, paddle::DataType::FLOAT16};
+          } else {
+            PD_THROW("Only supported attr of quant_max_bound in ['127.0', '448.0'].");
+          }
+        } else {
+          return {paddle::DataType::FLOAT16, paddle::DataType::FLOAT16};
+        }
+      } else {
+        // For CC80+, use bf16 as requested
+        if (out_linear_in_scale > 0.0) {
+          if (fabs(quant_max_bound - 127.0f) < 0.000001) {
+            return {paddle::DataType::INT8, paddle::DataType::BFLOAT16};
+          } else if (fabs(quant_max_bound - 448.0f) < 0.000001) {
+            return {paddle::DataType::FLOAT8_E4M3FN, paddle::DataType::BFLOAT16};
+          } else {
+            PD_THROW("Only supported attr of quant_max_bound in ['127.0', '448.0'].");
+          }
+        } else {
+          return {paddle::DataType::BFLOAT16, paddle::DataType::BFLOAT16};
+        }
       }
-    } else {
-      return {paddle::DataType::BFLOAT16, paddle::DataType::BFLOAT16};
-    }
   } else if (compute_dtype == "fp16") {
     if (out_linear_in_scale > 0.0) {
       if (fabs(quant_max_bound - 127.0f) < 0.000001) {
