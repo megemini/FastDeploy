@@ -164,6 +164,9 @@ class LinearBase(nn.Layer):
         if self.fd_config.quant_config:
             self.quant_method.process_loaded_weights(self, weight_tensor)
         else:
+            # Handle dtype mismatch by converting the weight tensor to match the parameter dtype
+            if weight_tensor.dtype != self.weight.dtype:
+                weight_tensor = weight_tensor.cast(self.weight.dtype)
             self.weight.set_value(weight_tensor)
 
     def load_state_dict(self, state_dict: dict):
@@ -184,6 +187,9 @@ class LinearBase(nn.Layer):
         # bias
         if self.with_bias:
             bias_tensor = paddle.to_tensor(get_tensor(state_dict.pop(self.bias_key)))
+            # Handle dtype mismatch by converting the bias tensor to match the parameter dtype
+            if bias_tensor.dtype != self.bias.dtype:
+                bias_tensor = bias_tensor.cast(self.bias.dtype)
             self.bias.set_value(bias_tensor)
 
     def forward_cuda(self, x: paddle.Tensor) -> paddle.Tensor:
@@ -566,6 +572,9 @@ class QKVParallelLinear(ColumnParallelLinear):
         if self.fd_config.quant_config:
             self.quant_method.process_loaded_weights(self, weight_tensor)
         else:
+            # Handle dtype mismatch by converting the weight tensor to match the parameter dtype
+            if weight_tensor.dtype != self.weight.dtype:
+                weight_tensor = weight_tensor.cast(self.weight.dtype)
             self.weight.set_value(weight_tensor)
 
     def load_state_dict(self, state_dict: dict):
@@ -588,6 +597,9 @@ class QKVParallelLinear(ColumnParallelLinear):
         if self.with_bias:
             if self.bias_key in state_dict.keys():
                 bias_tensor = paddle.to_tensor(get_tensor(state_dict.pop(self.bias_key)))
+                # Handle dtype mismatch by converting the bias tensor to match the parameter dtype
+                if bias_tensor.dtype != self.bias.dtype:
+                    bias_tensor = bias_tensor.cast(self.bias.dtype)
                 self.bias.set_value(bias_tensor)
             else:
                 q_bias_key = self.bias_key.replace("qkv_proj", "q_proj")
@@ -597,6 +609,9 @@ class QKVParallelLinear(ColumnParallelLinear):
                 k_bias = get_tensor(state_dict.pop(k_bias_key))
                 v_bias = get_tensor(state_dict.pop(v_bias_key))
                 qkv_bias = paddle.concat([q_bias, k_bias, v_bias], axis=-1)
+                # Handle dtype mismatch by converting the bias tensor to match the parameter dtype
+                if qkv_bias.dtype != self.bias.dtype:
+                    qkv_bias = qkv_bias.cast(self.bias.dtype)
                 self.bias.set_value(qkv_bias)
 
 

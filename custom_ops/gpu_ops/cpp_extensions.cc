@@ -78,9 +78,6 @@ std::vector<paddle::Tensor> AppendAttention(
     const paddle::optional<paddle::Tensor> &out_linear_shifts,
     const paddle::optional<paddle::Tensor> &out_linear_smooths,
     const paddle::optional<paddle::Tensor> &kv_signal_data,
-    const paddle::optional<paddle::Tensor>& q_norm_weight,
-    const paddle::optional<paddle::Tensor>& k_norm_weight,
-    const float rms_norm_eps,
     const std::string &compute_dtype, const std::string &cache_quant_type_str,
     const bool use_neox_rotary_style, const bool rope_3d,
     const int max_input_length, const float quant_max_bound,
@@ -91,27 +88,64 @@ std::vector<paddle::Tensor> AppendAttention(
     const bool speculate_decoder);
 
 std::vector<paddle::Tensor> GQARopeWriteCacheKernel(
-    const paddle::Tensor &qkv, const paddle::Tensor &key_cache,
-    const paddle::Tensor &value_cache, const paddle::Tensor &cu_seqlens_q,
-    const paddle::Tensor &cu_seqlens_k, const paddle::Tensor &rotary_embs,
-    const paddle::Tensor &seq_lens_this_time,
-    const paddle::Tensor &seq_lens_encoder,
-    const paddle::Tensor &seq_lens_decoder,
-    const paddle::Tensor &batch_id_per_token,
-    const paddle::Tensor &block_tables, const paddle::Tensor &kv_batch_ids,
-    const paddle::Tensor &kv_tile_ids, const paddle::Tensor &kv_num_blocks,
-    const paddle::Tensor &cache_batch_ids, const paddle::Tensor &cache_tile_ids,
-    const paddle::Tensor &cache_num_blocks,
-    const paddle::optional<paddle::Tensor> &cache_k_quant_scales,
-    const paddle::optional<paddle::Tensor> &cache_v_quant_scales,
-    const paddle::optional<paddle::Tensor> &cache_k_dequant_scales,
-    const paddle::optional<paddle::Tensor> &cache_v_dequant_scales,
-    const paddle::optional<paddle::Tensor> &cache_k_zp,
-    const paddle::optional<paddle::Tensor> &cache_v_zp,
-    const paddle::optional<paddle::Tensor> &kv_signal_data,
-    const int kv_token_num, const int max_seq_len,
-    const std::string &cache_quant_type);
+    const paddle::Tensor& qkv,
+    const paddle::Tensor& key_cache,
+    const paddle::Tensor& value_cache,
+    const paddle::Tensor& cu_seqlens_q,
+    const paddle::Tensor& cu_seqlens_k,
+    const paddle::Tensor& rotary_embs,
+    const paddle::Tensor& seq_lens_this_time,
+    const paddle::Tensor& seq_lens_encoder,
+    const paddle::Tensor& seq_lens_decoder,
+    const paddle::Tensor& batch_id_per_token,
+    const paddle::Tensor& block_tables,
+    const paddle::Tensor& kv_batch_ids,
+    const paddle::Tensor& kv_tile_ids,
+    const paddle::Tensor& kv_num_blocks,
+    const paddle::Tensor& cache_batch_ids,
+    const paddle::Tensor& cache_tile_ids,
+    const paddle::Tensor& cache_num_blocks,
+    const paddle::optional<paddle::Tensor>& cache_k_quant_scales,
+    const paddle::optional<paddle::Tensor>& cache_v_quant_scales,
+    const paddle::optional<paddle::Tensor>& cache_k_dequant_scales,
+    const paddle::optional<paddle::Tensor>& cache_v_dequant_scales,
+    const paddle::optional<paddle::Tensor>& cache_k_zp,
+    const paddle::optional<paddle::Tensor>& cache_v_zp,
+    const paddle::optional<paddle::Tensor>& kv_signal_data,
+    const int kv_token_num,
+    const int max_seq_len,
+    const std::string& cache_quant_type);
 
+std::vector<paddle::Tensor> GQARopeWriteCacheKernelWrapper(
+    const paddle::Tensor& qkv,
+    const paddle::Tensor& key_cache,
+    const paddle::Tensor& value_cache,
+    const paddle::Tensor& cu_seqlens_q,
+    const paddle::Tensor& cu_seqlens_k,
+    const paddle::Tensor& rotary_embs,
+    const paddle::Tensor& seq_lens_this_time,
+    const paddle::Tensor& seq_lens_encoder,
+    const paddle::Tensor& seq_lens_decoder,
+    const paddle::Tensor& batch_id_per_token,
+    const paddle::Tensor& block_tables,
+    const paddle::Tensor& kv_batch_ids,
+    const paddle::Tensor& kv_tile_ids,
+    const paddle::Tensor& kv_num_blocks,
+    const paddle::Tensor& cache_batch_ids,
+    const paddle::Tensor& cache_tile_ids,
+    const paddle::Tensor& cache_num_blocks,
+    const paddle::optional<paddle::Tensor>& cache_k_quant_scales,
+    const paddle::optional<paddle::Tensor>& cache_v_quant_scales,
+    const paddle::optional<paddle::Tensor>& cache_k_dequant_scales,
+    const paddle::optional<paddle::Tensor>& cache_v_dequant_scales,
+    const paddle::optional<paddle::Tensor>& cache_k_zp,
+    const paddle::optional<paddle::Tensor>& cache_v_zp,
+    const paddle::optional<paddle::Tensor>& kv_signal_data,
+    const int kv_token_num,
+    const int max_seq_len,
+    const std::string& cache_quant_type);
+
+// PreCacheLenConcat is available for all compute capabilities
 std::vector<paddle::Tensor>
 PreCacheLenConcat(const paddle::Tensor &seq_lens_decoder,
                   const paddle::Tensor &seq_lens_this_time,
@@ -326,7 +360,7 @@ std::vector<paddle::Tensor> ExtractTextTokenOutput(
     const paddle::Tensor &max_seq_len, const paddle::Tensor &max_seq_len_index,
     const paddle::Tensor &mm_token_num_len,
     const paddle::Tensor &seq_lens_this_time,
-    const paddle::Tensor &cu_seqlens_q, const paddle::Tensor &hidden_states);
+    const paddle::Tensor &cu_seqlens_q, const paddle::Tensor &score_text);
 
 std::vector<paddle::Tensor> MoEDeepGEMMPermute(const paddle::Tensor &x,
                                                const paddle::Tensor &topk_idx,
@@ -359,6 +393,19 @@ void GetPositionIdsAndMaskEncoderBatch(
     const paddle::Tensor& mask_encoder_batch);
 
 std::vector<paddle::Tensor> DecodeMLAWriteCacheKernel(
+    const paddle::Tensor& kv_nope,
+    const paddle::Tensor& kv_pe,
+    const paddle::Tensor& kv_cache,
+    const paddle::Tensor& seq_lens,
+    const paddle::Tensor& seq_lens_encoder,
+    const paddle::Tensor& batch_id_per_token,
+    const paddle::Tensor& cu_seqlens_q,
+    const paddle::Tensor& block_tables,
+    const std::string& cache_quant_type_str,
+    const int max_seq_len,
+    const bool speculate_decoder);
+
+std::vector<paddle::Tensor> DecodeMLAWriteCacheKernelCC70(
     const paddle::Tensor& kv_nope,
     const paddle::Tensor& kv_pe,
     const paddle::Tensor& kv_cache,
@@ -484,6 +531,7 @@ void CutlassScaledMmAzp(paddle::Tensor& c, paddle::Tensor const& a,
                            paddle::optional<paddle::Tensor> const& azp,
                            paddle::optional<paddle::Tensor> const& bias);
 
+#if defined(ENABLE_SCALED_MM_C2X)
 void StaticScaledFp8Quant(paddle::Tensor &out, paddle::Tensor const &input,
                           paddle::Tensor const &scale);
 
@@ -493,6 +541,7 @@ void DynamicScaledFp8Quant(paddle::Tensor &out, paddle::Tensor const &input,
 void DynamicPerTokenScaledFp8Quant(paddle::Tensor &out,
                                    paddle::Tensor const &input,
                                    paddle::Tensor &scales, float scale_ub);
+#endif
 
 std::vector<paddle::Tensor> NoauxTc(
       paddle::Tensor& scores,
@@ -764,17 +813,6 @@ void SpeculateStepPaddle(
     const int encoder_decoder_block_num,
     const int max_draft_tokens);
 
-void MergePrefillDecodeOutput(
-        const paddle::Tensor &encoder_res,
-        const paddle::Tensor &decoder_res,
-        const paddle::Tensor &seq_lens_encoder,
-        const paddle::Tensor &seq_lens_decoder,
-        const paddle::Tensor &seq_lens_this_time,
-        const paddle::Tensor &cu_seq_q,
-        const int head_num,
-        const int head_dim,
-        const int max_token);
-
 PYBIND11_MODULE(fastdeploy_ops, m) {
 
   m.def("get_expert_token_num", &GetExpertTokenNum, py::arg("topk_ids"),
@@ -832,7 +870,7 @@ PYBIND11_MODULE(fastdeploy_ops, m) {
    * gqa_rope_write_cache.cu
    * gqa_rope_write_cache
    */
-  m.def("gqa_rope_write_cache", &GQARopeWriteCacheKernel,
+  m.def("gqa_rope_write_cache", &GQARopeWriteCacheKernelWrapper,
         "gqa rope write cache function");
   /**
    * pre_cache_len_concat.cu
@@ -1037,6 +1075,7 @@ PYBIND11_MODULE(fastdeploy_ops, m) {
    * dynamic_scaled_fp8_quant
    * dynamic_per_token_scaled_fp8_quant
    */
+#if defined(ENABLE_SCALED_MM_C2X)
   m.def("static_scaled_fp8_quant", &StaticScaledFp8Quant, "static_scaled_fp8_quant function",
       py::arg("out"), py::arg("input"), py::arg("scale"));
 
@@ -1047,6 +1086,7 @@ PYBIND11_MODULE(fastdeploy_ops, m) {
   m.def("dynamic_per_token_scaled_fp8_quant", &DynamicPerTokenScaledFp8Quant,
         "dynamic_per_token_scaled_fp8_quant function",
          py::arg("out"), py::arg("input"), py::arg("scales"), py::arg("scale_ub"));
+#endif
   m.def("decode_mla_write_cache", &DecodeMLAWriteCacheKernel, "decode_mla_write_cache function");
 
   m.def("prefill_mla_write_cache", &PrefillMLAWriteCacheKernel, "prefill_mla_write_cache function");
@@ -1125,6 +1165,4 @@ PYBIND11_MODULE(fastdeploy_ops, m) {
   m.def("mtp_step_paddle",&MTPStepPaddle, "mtp_step_paddle function");
 
   m.def("speculate_step_paddle",&SpeculateStepPaddle, "speculate_step_paddle function");
-
-  m.def("merge_prefill_decode_output", &MergePrefillDecodeOutput, "merge_prefill_decode_output function");
 }

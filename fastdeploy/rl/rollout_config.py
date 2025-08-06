@@ -15,6 +15,7 @@
 """
 
 from fastdeploy.worker.worker_process import initialize_fd_config
+from fastdeploy.config import get_compatible_dtype
 
 
 class RolloutModelConfig:
@@ -32,7 +33,7 @@ class RolloutModelConfig:
         block_size: int = 64,
         engine_worker_queue_port: int = 9923,
         device_ids: str = "0",
-        dtype: str = "bfloat16",
+        dtype: str = get_compatible_dtype("bfloat16"),
         enc_dec_block_num: int = 1,
         kv_cache_ratio: float = 0.7,
         first_token_id: int = 1,

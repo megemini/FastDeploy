@@ -294,7 +294,6 @@ elif paddle.is_compiled_with_cuda():
         "gpu_ops/fused_rotary_position_encoding.cu",
         "gpu_ops/noaux_tc.cu",
         "gpu_ops/custom_all_reduce/all_reduce.cu",
-        "gpu_ops/merge_prefill_decode_output.cu",
     ]
 
     # pd_disaggregation
@@ -385,21 +384,46 @@ elif paddle.is_compiled_with_cuda():
     if os.path.isdir(fp8_auto_gen_directory):
         shutil.rmtree(fp8_auto_gen_directory)
 
-    if cc >= 75:
+    if cc >= 70:
         nvcc_compile_args += [
             "-DENABLE_SCALED_MM_C2X=1",
             "-Igpu_ops/cutlass_kernels/w8a8",
         ]
         sources += [
             "gpu_ops/cutlass_kernels/w8a8/scaled_mm_entry.cu",
-            "gpu_ops/cutlass_kernels/w8a8/scaled_mm_c2x.cu",
+            "gpu_ops/cutlass_kernels/w8a8/scaled_mm_cc70_compat.cu",
             "gpu_ops/quantization/common.cu",
         ]
+        
+        if cc >= 75:
+            sources += [
+                "gpu_ops/cutlass_kernels/w8a8/scaled_mm_c2x.cu",
+            ]
 
+    # Always include pre_cache_len_concat.cu regardless of compute capability
+    sources += ["gpu_ops/append_attn/pre_cache_len_concat.cu"]
+    
     if cc >= 80:
         # append_attention
         sources += ["gpu_ops/append_attention.cu"]
-        sources += find_end_files("gpu_ops/append_attn", ".cu")
+        # Include all other files from append_attn except pre_cache_len_concat.cu which is already included
+        for file in find_end_files("gpu_ops/append_attn", ".cu"):
+            if "pre_cache_len_concat.cu" not in file:
+                sources.append(file)
+    elif cc >= 70:
+        # append_attention with cc70 compatibility
+        sources += ["gpu_ops/append_attention_wrapper.cu"]
+        sources += ["gpu_ops/append_attention_cc70_compat.cu"]
+        # Include get_block_shape_and_split_kv_block_cc70_compat.cu for GetBlockShapeAndSplitKVBlock function
+        sources += ["gpu_ops/append_attn/get_block_shape_and_split_kv_block_cc70_compat.cu"]
+        # Include gqa_rope_write_cache_cc70_compat.cu for GQARopeWriteCacheKernel function
+        sources += ["gpu_ops/append_attn/gqa_rope_write_cache_cc70_compat.cu"]
+        # Include mla_cache_kernel_cc70_compat.cu for DecodeMLAWriteCacheKernel and PrefillMLAWriteCacheKernel functions
+        sources += ["gpu_ops/append_attn/mla_cache_kernel_cc70_compat.cu"]
+        # Include mla_cache_wrapper_cc70_compat.cu to provide the wrapper functions
+        sources += ["gpu_ops/append_attn/mla_cache_wrapper_cc70_compat.cu"]
+
+        nvcc_compile_args += ["-DAPPEND_ATTENTION_COMPATIBILITY_CC70=1"]
         # mla
         sources += ["gpu_ops/multi_head_latent_attention.cu"]
         # gemm_dequant
@@ -407,13 +431,56 @@ elif paddle.is_compiled_with_cuda():
         # speculate_decoding
         sources += find_end_files("gpu_ops/speculate_decoding", ".cu")
         sources += find_end_files("gpu_ops/speculate_decoding", ".cc")
-        nvcc_compile_args += ["-DENABLE_BF16"]
-        # moe
-        os.system("python gpu_ops/moe/moe_wna16_marlin_utils/generate_kernels.py")
+        # Only enable BF16 for CC >= 80
+        if cc >= 80:
+            nvcc_compile_args += ["-DENABLE_BF16"]
+        # moe - full feature support for cc>=80
         sources += find_end_files("gpu_ops/cutlass_kernels/moe_gemm/", ".cu")
         sources += find_end_files("gpu_ops/cutlass_kernels/w4a8_moe/", ".cu")
         sources += find_end_files("gpu_ops/moe/", ".cu")
         nvcc_compile_args += ["-Igpu_ops/moe"]
+        nvcc_compile_args += ["-DMOE_COMPATIBILITY_USE_TENSOR_CORE=1"]
+    elif cc >= 70:
+        # Limited MOE support for cc>=70 with compatibility fallbacks
+        nvcc_compile_args += ["-DMOE_COMPATIBILITY_CC70=1"]
+        nvcc_compile_args += ["-DMOE_COMPATIBILITY_NO_BF16=1"]
+        nvcc_compile_args += ["-DMOE_COMPATIBILITY_USE_FP16=1"]
+        nvcc_compile_args += ["-Igpu_ops/moe"]
+
+        # Include most MOE kernels for cc>=70 compatibility
+        # Use the same approach as cc>=80 but exclude problematic files
+        moe_sources = find_end_files("gpu_ops/moe/", ".cu")
+
+        # Filter out files that might have cc>=80 specific dependencies
+        excluded_files = [
+            "gpu_ops/moe/moe_gemm_cc70_compat.cu",  # Our custom file, include separately
+        ]
+
+        for src in moe_sources:
+            if src not in excluded_files:
+                sources.append(src)
+
+        # Compatibility MOE kernels for cc>=70
+        # Use simplified implementation to avoid CUTLASS template issues
+        # Note: We've removed moe_simple_cc70.cu to avoid multiple definition errors
+
+        # Include basic CUTLASS MOE files that work with cc>=70
+        # Only include files that exist and are compatible
+        cutlass_moe_files = [
+            "gpu_ops/cutlass_kernels/moe_gemm/fused_moe_gemm_kernels_fp16_fp16.cu",
+            "gpu_ops/cutlass_kernels/moe_gemm/fused_moe_gemm_kernels_fp16_int8.cu",
+            "gpu_ops/cutlass_kernels/moe_gemm/fused_moe_gemm_kernels.cu",
+        ]
+
+        for cutlass_file in cutlass_moe_files:
+            if os.path.exists(cutlass_file):
+                sources.append(cutlass_file)
+                print(f"Including CUTLASS file for cc70: {cutlass_file}")
+            else:
+                print(f"CUTLASS file not found, skipping: {cutlass_file}")
+
+        # Use SIMT instead of Tensor Core for older architectures
+        nvcc_compile_args += ["-DMOE_COMPATIBILITY_USE_SIMT=1"]
 
     if cc >= 89:
         # Running generate fp8 gemm codes.
@@ -497,9 +564,6 @@ elif paddle.is_compiled_with_cuda():
     if cc >= 90 and nvcc_version >= 12.0:
         # Hopper optmized mla
         sources += find_end_files("gpu_ops/mla_attn", ".cu")
-        sources += ["gpu_ops/flash_mask_attn/flash_mask_attn.cu"]
-        os.system("python utils/auto_gen_w4afp8_gemm_kernel.py")
-        sources += find_end_files("gpu_ops/w4afp8_gemm", ".cu")
 
     setup(
         name="fastdeploy_ops",

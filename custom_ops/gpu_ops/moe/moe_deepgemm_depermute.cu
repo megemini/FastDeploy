@@ -13,6 +13,13 @@
 // limitations under the License.
 
 #include "helper.h"
+#include "moe/moe_compatibility.h"
+
+// BF16 and FP16 compatibility operators are now defined in moe_compatibility.h
+// Ensure we have the proper operators for bfloat16
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+  #include <cuda_bf16.h>
+#endif
 
 template<typename T, int VecSize, int TopK>
 __global__ void MoEDeepGEMMDePermuteKernel(T* out, const T* ffn_out, const int* permute_indices_per_token, const int64_t* topk_idx, const float* topk_weights, const int token_num, const int num_vecs, const int hidden, const int max_tokens_per_expert) {
@@ -35,7 +42,12 @@ __global__ void MoEDeepGEMMDePermuteKernel(T* out, const T* ffn_out, const int* 
             Load<T, VecSize>(ffn_out + src_expert_id * max_tokens_per_expert * hidden + src_expert_token * hidden + hidden_vec_id * VecSize, &in_vec);
 #pragma unroll
             for (int i = 0; i < VecSize; i++) {
-                in_vec[i] *= weight;
+                // Use explicit conversion for bfloat16 multiplication with float
+                if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+                    in_vec[i] = __float2bfloat16(__bfloat162float(in_vec[i]) * weight);
+                } else {
+                    in_vec[i] *= weight;
+                }
             }
             Store<T, VecSize>(in_vec, shm_hidden + wid * hidden + hidden_vec_id * VecSize);
         }
@@ -51,7 +63,12 @@ __global__ void MoEDeepGEMMDePermuteKernel(T* out, const T* ffn_out, const int* 
             for (int i = 0; i < VecSize; i++) {
 #pragma unroll
                  for (int topk_id = 1; topk_id < TopK; topk_id++) {
-                    acc_vec[0][i] += acc_vec[topk_id][i];
+                    // Use explicit conversion for bfloat16 addition
+                    if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+                        acc_vec[0][i] = __float2bfloat16(__bfloat162float(acc_vec[0][i]) + __bfloat162float(acc_vec[topk_id][i]));
+                    } else {
+                        acc_vec[0][i] += acc_vec[topk_id][i];
+                    }
                  }
             }
             Store<T, VecSize>(acc_vec[0], out + token_idx * hidden + hidden_vec_id * VecSize);

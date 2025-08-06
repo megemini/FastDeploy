@@ -87,12 +87,29 @@ __device__ inline void cp_async_wait() {
 }
 #else
 
-inline void cp_async4_pred(void*, const void*, bool = true) {}
-inline void cp_async4(void*, const void*) {}
-inline void cp_async_fence() {}
-template <int n>
-inline void cp_async_wait() {}
+// Fallback implementations for cc < 80
+__device__ inline void cp_async4_pred(void* smem_ptr, const void* glob_ptr, bool pred = true) {
+  // Fallback to regular memory copy for older architectures
+  if (pred) {
+    memcpy(smem_ptr, glob_ptr, 16);
+  }
+}
 
+__device__ inline void cp_async4(void* smem_ptr, const void* glob_ptr) {
+  // Fallback to regular memory copy for older architectures
+  memcpy(smem_ptr, glob_ptr, 16);
+}
+
+__device__ inline void cp_async_fence() {
+  // No-op for older architectures
+  __syncthreads();
+}
+
+template <int n>
+__device__ inline void cp_async_wait() {
+  // No-op for older architectures, just sync threads
+  __syncthreads();
+}
 
 #endif
 

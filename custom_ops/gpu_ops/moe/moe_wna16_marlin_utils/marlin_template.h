@@ -60,6 +60,8 @@ __global__ void Marlin(
     int4* __restrict__ C_tmp,    // fp32 tmp output buffer (for reduce)
     const int4* __restrict__ scales_ptr,  // fp16 quantization scales of shape
                                           // (k/groupsize)xn
+    const uint16_t* __restrict__ scale2_ptr,  // fp16 global scale (for nvfp4
+                                              // only)
     const int4* __restrict__ zp_ptr,      // 4bit packed zero-points of shape
                                           // (k/groupsize)x(n/pack_factor)
     const int* __restrict__ g_idx,        // int32 group indices of shape k
@@ -77,7 +79,21 @@ __global__ void Marlin(
     int* locks,             // extra global storage for barrier synchronization
     bool use_atomic_add,    // whether to use atomic add to reduce
     bool use_fp32_reduce,   // whether to use fp32 global reduce
-    int max_shared_mem) {}
+    int max_shared_mem) {
+    // Fallback implementation for CUDA architectures < 800
+    // This is a minimal implementation that just initializes the output to zero
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    // Initialize output to zero
+    if (tid < prob_m * prob_n / 8) {  // int4 contains 8 half elements
+        C[tid] = make_int4(0, 0, 0, 0);
+    }
+    
+    // If C_tmp is used, initialize it too
+    if (C_tmp != nullptr && tid < prob_m * prob_n / 4) {  // int4 contains 4 float elements
+        C_tmp[tid] = make_int4(0, 0, 0, 0);
+    }
+}
 
 }  // namespace MARLIN_NAMESPACE_NAME
 

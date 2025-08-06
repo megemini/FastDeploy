@@ -20,6 +20,12 @@
 #include "cutlass_extensions/wint_type_traits.h"
 #include "helper.h"
 #include "moe/fused_moe_helper.h"
+#include "moe/moe_compatibility.h"
+
+#ifdef MOE_COMPATIBILITY_CC70
+// Note: We've removed the direct include of moe_gemm_cc70_compat.cu to avoid multiple definition errors
+// The functions from that file will be compiled separately and linked as needed
+#endif
 
 namespace phi {
 

@@ -25,23 +25,46 @@ from fastdeploy.worker.experts_manager import RedundantExpertManger
 
 def get_moe_method():
     """
-    return moe method based on device platform
+    return moe method based on device platform and compute capability
     """
     from fastdeploy.platforms import current_platform
 
     if current_platform.is_cuda():
-        from .fused_moe_cutlass_backend import CutlassMoEMethod
+        # Check compute capability for compatibility
+        compute_capability = _get_cuda_compute_capability()
 
-        return CutlassMoEMethod(None)
+        if compute_capability >= 80:
+            # Full MOE support for cc>=80
+            from .fused_moe_cutlass_backend import CutlassMoEMethod
+            return CutlassMoEMethod(None)
+        elif compute_capability >= 70:
+            # Compatibility MOE support for cc>=70
+            from .fused_moe_cc70_backend import CC70CompatMoEMethod
+            return CC70CompatMoEMethod(None)
+        else:
+            # Fallback to basic implementation for older architectures
+            from .fused_moe_cc70_backend import CC70CompatMoEMethod
+            return CC70CompatMoEMethod(None)
     elif current_platform.is_xpu():
         from .fused_moe_xpu_backend import XPUMoEMethod
-
         return XPUMoEMethod(None)
     elif current_platform.is_gcu():
         from fastdeploy.model_executor.layers.backends import GCUFusedMoeMethod
-
         return GCUFusedMoeMethod(None)
     raise NotImplementedError
+
+
+def _get_cuda_compute_capability() -> int:
+    """Get CUDA compute capability of the current device."""
+    try:
+        import paddle
+        if paddle.is_compiled_with_cuda():
+            device_id = paddle.get_device().split(':')[-1]
+            prop = paddle.device.cuda.get_device_properties(int(device_id))
+            return prop.major * 10 + prop.minor
+    except Exception:
+        pass
+    return 70  # Default to cc70 if detection fails
 
 
 class FusedMoE(nn.Layer):

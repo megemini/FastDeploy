@@ -139,19 +139,30 @@ def load_ep_checkpoint(model_path: str, fd_config: FDConfig, return_numpy: bool 
 
     # Open each safetensor file sequentially with progress bar
     for safetensor_path in tqdm(safetensor_paths, desc="Loading safetensor files", unit="file"):
-        with safe_open(
-            os.path.join(model_path, safetensor_path),
-            framework="np",
-            device="cpu",
-        ) as f:
-            # Check if this file contains keys from filtered_map
-            for k in filtered_map:
-                if filtered_map[k] == safetensor_path and k in f.keys():
-                    weight = f.get_tensor(k)
-                    if not return_numpy:
-                        weight = paddle.Tensor(weight, zero_copy=True)
-                        weight = weight._copy_to(paddle.framework._current_expected_place(), False)
-                    state_dict[k] = weight
+        try:
+            with safe_open(
+                os.path.join(model_path, safetensor_path),
+                framework="np",
+                device="cpu",
+            ) as f:
+                # Check if this file contains keys from filtered_map
+                for k in filtered_map:
+                    if filtered_map[k] == safetensor_path and k in f.keys():
+                        weight = f.get_tensor(k)
+                        if not return_numpy:
+                            weight = paddle.Tensor(weight, zero_copy=True)
+                            weight = weight._copy_to(paddle.framework._current_expected_place(), False)
+                        state_dict[k] = weight
+        except Exception as e:
+            logger.error(f"Failed to load safetensors file {safetensor_path}: {e}")
+            if "MetadataIncompleteBuffer" in str(e):
+                raise ValueError(
+                    f"SafeTensorError::MetadataIncompleteBuffer - The safetensors file {safetensor_path} appears to be corrupted or incomplete. "
+                    f"Please check the integrity of your model files in {model_path}. "
+                    f"Original error: {e}"
+                )
+            else:
+                raise ValueError(f"Failed to load safetensors file {safetensor_path}: {e}")
     return state_dict
 
 
@@ -165,12 +176,27 @@ def safetensors_weights_iterator(
         safe_tensor_list,
         desc="Loading safetensors checkpoint shards",
     ):
-        from paddleformers.utils.safetensors import fast_safe_open
+        try:
+            from paddleformers.utils.safetensors import fast_safe_open
+            use_fast_safe_open = True
+        except ImportError:
+            from safetensors import safe_open
+            use_fast_safe_open = False
 
-        with fast_safe_open(st_file, framework="np") as f:
-            for name in f.keys():
-                param = f.get_slice(name)
-                yield name, param
+        try:
+            if use_fast_safe_open:
+                with fast_safe_open(st_file, framework="np") as f:
+                    for name in f.keys():
+                        param = f.get_slice(name)
+                        yield name, param
+            else:
+                with safe_open(st_file, framework="np", device="cpu") as f:
+                    for name in f.keys():
+                        param = f.get_tensor(name)
+                        yield name, param
+        except Exception as e:
+            logger.error(f"Failed to load safetensors file {st_file}: {e}")
+            raise ValueError(f"SafeTensorError::FailedToLoadFile {st_file}: {e}")
 
 
 def fastsafetensors_weights_iterator(
@@ -215,13 +241,11 @@ def load_pre_sharded_checkpoint(model_path: str, local_rank: int, use_fastsafete
     """
     load_pre_sharded_checkpoint
     """
-    from fastdeploy.model_executor.layers.utils import get_tensor
-
     state_dict = {}
     _, safetensor_files = get_all_safetensors(os.path.join(model_path, f"rank{local_rank}"))
     weights_iterator = safetensors_weights_iterator(safetensor_files)
     for name, weight in weights_iterator:
-        state_dict[name] = get_tensor(weight)
+        state_dict[name] = weight
     return state_dict
 
 
@@ -330,12 +354,23 @@ def load_composite_checkpoint(
                 state_dict = load_tp_checkpoint_v1(model_path, cls, fd_config, use_fastsafetensor=True)
                 deal_state_dict(state_dict)
             else:
-                state_dict = load_tp_checkpoint(
-                    model_path,
-                    cls,
-                    fd_config.model_config.pretrained_config,
-                    return_numpy=return_numpy,
-                )
+                try:
+                    state_dict = load_tp_checkpoint(
+                        model_path,
+                        cls,
+                        fd_config.model_config.pretrained_config,
+                        return_numpy=return_numpy,
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to load TP checkpoint: {e}")
+                    if "SafeTensorError::MetadataIncompleteBuffer" in str(e):
+                        raise ValueError(
+                            f"SafeTensorError::MetadataIncompleteBuffer - The safetensors file appears to be corrupted or incomplete. "
+                            f"Please check the integrity of your model files in {model_path}. "
+                            f"Original error: {e}"
+                        )
+                    else:
+                        raise ValueError(f"Failed to load model checkpoint: {e}")
     if not state_dict:
         raise ValueError("weight not found in state_dict !")
     return state_dict

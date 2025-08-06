@@ -28,6 +28,7 @@ from fastdeploy.config import (
     CacheConfig,
     DecodingConfig,
     DeviceConfig,
+    get_compatible_dtype,
     EarlyStopConfig,
     ErnieArchitectures,
     FDConfig,
@@ -257,11 +258,11 @@ class PaddleDisWorkerProc:
                     f"num_insert_requests: {len(req_dicts)}"
                 )
                 # Process prefill inputs
-                self.worker.preprocess_new_task(req_dicts, num_running_requests)
+                self.worker.preprocess_new_task(req_dicts)
 
             # Execute model to generate token. The generated token will be written to the buffer.
             # These generated tokens can be obtained through get_output op.
-            self.worker.execute_model(num_running_requests)
+            self.worker.execute_model()
 
     def event_loop_normal(self) -> None:
         """Main event loop for Paddle Distrubuted Workers.
@@ -338,7 +339,7 @@ class PaddleDisWorkerProc:
                 )
 
                 # Process prefill inputs
-                self.worker.preprocess_new_task(req_dicts, num_running_requests)
+                self.worker.preprocess_new_task(req_dicts)
 
             if not self.worker.model_runner.not_need_stop():
                 if self.ranks > 1:
@@ -349,7 +350,7 @@ class PaddleDisWorkerProc:
 
             # Execute model to generate token. The generated token will be written to the buffer.
             # These generated tokens can be obtained through get_output op.
-            self.worker.execute_model(req_dicts, num_running_requests)
+            self.worker.execute_model(req_dicts)
             self.exist_prefill_task_signal.value[0] = self.worker.exist_prefill()
 
     def initialize_kv_cache(self) -> None:
@@ -453,7 +454,7 @@ def parse_args():
     parser.add_argument("--engine_worker_queue_port", type=int, default=9923)
     parser.add_argument("--max_model_len", type=int, default=3072, help="max model len")
     parser.add_argument("--device_ids", type=str, default="0", help="cuda visible devices")
-    parser.add_argument("--dtype", type=str, default="bfloat16", help="input dtype")
+    parser.add_argument("--dtype", type=str, default=get_compatible_dtype("bfloat16"), help="input dtype")
     parser.add_argument("--enc_dec_block_num", type=int, default=1, help="encoder's decoder num")
     parser.add_argument(
         "--kv_cache_ratio",
@@ -748,7 +749,4 @@ def run_worker_proc() -> None:
 
 
 if __name__ == "__main__":
-    from fastdeploy.plugins.model_register import load_model_register_plugins
-
-    load_model_register_plugins()
     run_worker_proc()

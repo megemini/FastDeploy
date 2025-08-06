@@ -176,7 +176,8 @@ struct UnzipAndDequantFunctor<T, WintQuantMethod::kWeightOnlyInt2, TileRows,
         if (g_super_scale_ptr) {
           args->super_scale_ptr[col] = g_super_scale_ptr[col];
         } else {
-          args->super_scale_ptr[col] = static_cast<T>(1);
+          // Explicitly cast to float first to avoid constructor ambiguity for __nv_bfloat16
+          args->super_scale_ptr[col] = static_cast<T>(1.0f);
         }
 
         args->code_scale_ptr[col] = g_code_scale_ptr[col];

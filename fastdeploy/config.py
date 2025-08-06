@@ -31,6 +31,51 @@ from fastdeploy.utils import check_unified_ckpt, get_logger
 
 logger = get_logger("config", "config.log")
 
+try:
+    import paddle
+    PADDLE_AVAILABLE = True
+except ImportError:
+    PADDLE_AVAILABLE = False
+
+
+def get_cuda_compute_capability() -> int:
+    """Get CUDA compute capability of the current device.
+    
+    Returns:
+        int: Compute capability as major*10 + minor (e.g., 80 for 8.0, 70 for 7.0)
+    """
+    if not PADDLE_AVAILABLE:
+        return 0
+    
+    try:
+        if paddle.device.cuda.is_available():
+            device_id = paddle.get_device().split(':')[-1]
+            prop = paddle.device.cuda.get_device_properties(int(device_id))
+            return prop.major * 10 + prop.minor
+    except Exception:
+        pass
+    return 0
+
+
+def get_compatible_dtype(dtype: str = "bfloat16") -> str:
+    """Get dtype compatible with current GPU compute capability.
+    
+    Args:
+        dtype: Requested dtype (default: "bfloat16")
+        
+    Returns:
+        str: Compatible dtype ("bfloat16" or "float16")
+    """
+    if dtype != "bfloat16":
+        return dtype
+    
+    compute_capability = get_cuda_compute_capability()
+    if compute_capability >= 80:
+        return "bfloat16"
+    else:
+        logger.info(f"GPU compute capability {compute_capability} does not support bfloat16, falling back to float16")
+        return "float16"
+
 TaskOption = Literal["generate"]
 
 
@@ -62,11 +107,6 @@ class ErnieArchitectures:
         "Ernie4_5_MoeForCausalLM",
         "Ernie4_5_VLMoeForConditionalGeneration",
     }
-
-    @classmethod
-    def register_ernie_model_arch(cls, model_class):
-        if model_class.name().startswith("Ernie") and model_class.name() not in cls.ARCHITECTURES:
-            cls.ARCHITECTURES.add(model_class.name())
 
     @classmethod
     def contains_ernie_arch(cls, architectures):
@@ -246,8 +286,8 @@ class ParallelConfig:
         self.max_model_len: int = 3072  # max_seq_len
         # cuda visible devices
         self.device_ids: str = "0"
-        # Input dtype
-        self.dtype: str = "bfloat16"
+        # Input dtype - automatically adjusted for compute capability compatibility
+        self.dtype: str = get_compatible_dtype("bfloat16")
         # Encoder's decoder num
         self.enc_dec_block_num: int = 1
         # First token id
@@ -734,7 +774,8 @@ class CacheConfig:
         self.kv_cache_ratio = 0.75
         self.enc_dec_block_num = 2
         self.prealloc_dec_block_slot_num_threshold = 5
-        self.cache_dtype = "bfloat16"
+        # Cache dtype - automatically adjusted for compute capability compatibility
+        self.cache_dtype = get_compatible_dtype("bfloat16")
         self.model_cfg = None
         self.enable_chunked_prefill = False
         self.rdma_comm_ports = None

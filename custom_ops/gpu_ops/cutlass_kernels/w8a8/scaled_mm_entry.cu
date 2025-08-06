@@ -4,6 +4,12 @@
 #include "helper.h"
 #include <iostream>
 
+void cutlass_scaled_mm_sm70(paddle::Tensor &c, paddle::Tensor const &a,
+                            paddle::Tensor const &b,
+                            paddle::Tensor const &a_scales,
+                            paddle::Tensor const &b_scales,
+                            paddle::optional<paddle::Tensor> const &bias);
+
 void cutlass_scaled_mm_sm75(paddle::Tensor &c, paddle::Tensor const &a,
                             paddle::Tensor const &b,
                             paddle::Tensor const &a_scales,
@@ -29,6 +35,14 @@ void cutlass_scaled_mm_sm90(paddle::Tensor &c, paddle::Tensor const &a,
                             paddle::Tensor const &b_scales,
                             paddle::optional<paddle::Tensor> const &bias);
 #endif
+
+void cutlass_scaled_mm_azp_sm70(paddle::Tensor& c, paddle::Tensor const& a,
+                                paddle::Tensor const& b,
+                                paddle::Tensor const& a_scales,
+                                paddle::Tensor const& b_scales,
+                                paddle::Tensor const& azp_adj,
+                                paddle::optional<paddle::Tensor> const& azp,
+                                paddle::optional<paddle::Tensor> const& bias);
 
 void cutlass_scaled_mm_azp_sm75(paddle::Tensor& c, paddle::Tensor const& a,
                                 paddle::Tensor const& b,
@@ -130,6 +144,12 @@ void CutlassScaledMm(paddle::Tensor &c, paddle::Tensor const &a,
     cutlass_scaled_mm_sm75(c, a, b, a_scales, b_scales, bias);
     return;
   }
+
+  if (version_num >= 70) {
+    // Volta
+    cutlass_scaled_mm_sm70(c, a, b, a_scales, b_scales, bias);
+    return;
+  }
 #endif
 
   PADDLE_THROW(phi::errors::Unimplemented(
@@ -198,10 +218,17 @@ void CutlassScaledMmAzp(paddle::Tensor& c, paddle::Tensor const& a,
     return;
   }
 
-  // Turing
-  PD_CHECK(version_num >= 75);
-  cutlass_scaled_mm_azp_sm75(c, a, b, a_scales, b_scales, azp_adj, azp, bias);
-  return;
+  if (version_num >= 75) {
+    // Turing
+    cutlass_scaled_mm_azp_sm75(c, a, b, a_scales, b_scales, azp_adj, azp, bias);
+    return;
+  }
+
+  if (version_num >= 70) {
+    // Volta
+    cutlass_scaled_mm_azp_sm70(c, a, b, a_scales, b_scales, azp_adj, azp, bias);
+    return;
+  }
 #endif
 
   PADDLE_THROW(phi::errors::Unimplemented(

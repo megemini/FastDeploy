@@ -24,7 +24,7 @@ import numpy as np
 import paddle
 
 from fastdeploy.cache_manager.cache_data import CacheStatus
-from fastdeploy.config import SpeculativeConfig
+from fastdeploy.config import SpeculativeConfig, get_compatible_dtype
 from fastdeploy.inter_communicator import EngineCacheQueue, IPCSignal
 from fastdeploy.model_executor.ops.gpu import (
     cuda_host_alloc,
@@ -81,7 +81,7 @@ def parse_args():
     parser.add_argument(
         "--cache_dtype",
         type=str,
-        default="bfloat16",
+        default=get_compatible_dtype("bfloat16"),
         choices=["uint8", "bfloat16"],
         help="cache dtype",
     )
