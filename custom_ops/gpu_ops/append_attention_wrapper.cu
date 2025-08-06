@@ -310,12 +310,39 @@ std::vector<paddle::Tensor> AppendAttentionKernelWrapper(
                 causal,
                 speculate_decoder);
         } else if (D == paddle::DataType::BFLOAT16) {
-#ifdef __CUDA_BF16_TYPES_EXIST__
-            return append_attention_cc70_compat::AppendAttentionKernelCC70<__nv_bfloat16>(
+            // For CC70 compatibility, convert BFLOAT16 to FP16
+            // Convert input tensors to FP16
+            paddle::Tensor qkv_fp16 = qkv.cast(paddle::DataType::FLOAT16);
+            paddle::Tensor key_cache_fp16 = key_cache.cast(paddle::DataType::FLOAT16);
+            paddle::Tensor value_cache_fp16 = value_cache.cast(paddle::DataType::FLOAT16);
+            
+            // Convert optional tensors if they exist
+            paddle::optional<paddle::Tensor> rotary_embs_fp16;
+            if (rotary_embs) {
+                rotary_embs_fp16 = rotary_embs->cast(paddle::DataType::FLOAT16);
+            }
+            
+            paddle::optional<paddle::Tensor> attn_mask_fp16;
+            if (attn_mask) {
+                attn_mask_fp16 = attn_mask->cast(paddle::DataType::FLOAT16);
+            }
+            
+            paddle::optional<paddle::Tensor> qkv_bias_fp16;
+            if (qkv_bias) {
+                qkv_bias_fp16 = qkv_bias->cast(paddle::DataType::FLOAT16);
+            }
+            
+            paddle::optional<paddle::Tensor> qkv_out_scales_fp16;
+            if (qkv_out_scales) {
+                qkv_out_scales_fp16 = qkv_out_scales->cast(paddle::DataType::FLOAT16);
+            }
+            
+            // Call the FP16 implementation
+            auto result = append_attention_cc70_compat::AppendAttentionKernelCC70<half>(
                 meta_data,
-                qkv,
-                key_cache,
-                value_cache,
+                qkv_fp16,
+                key_cache_fp16,
+                value_cache_fp16,
                 seq_lens_encoder,
                 seq_lens_decoder,
                 seq_lens_this_time,
@@ -333,10 +360,10 @@ std::vector<paddle::Tensor> AppendAttentionKernelWrapper(
                 decoder_num_blocks,
                 set_max_lengths,
                 max_len_kv,
-                rotary_embs,
-                attn_mask,
-                qkv_bias,
-                qkv_out_scales,
+                rotary_embs_fp16,
+                attn_mask_fp16,
+                qkv_bias_fp16,
+                qkv_out_scales_fp16,
                 cache_k_quant_scales,
                 cache_v_quant_scales,
                 cache_k_dequant_scales,
@@ -360,14 +387,8 @@ std::vector<paddle::Tensor> AppendAttentionKernelWrapper(
                 speculate_max_draft_token_num,
                 causal,
                 speculate_decoder);
-#else
-            // Fall back to FP16 if BF16 is not supported
-            paddle::Tensor qkv_fp16 = GetEmptyTensor(qkv.dims(), paddle::DataType::FLOAT16, qkv.place());
-            // Note: In a real implementation, we would need to convert all tensors to FP16
-            // For simplicity, we'll just return an error
-            PD_THROW("BFLOAT16 is not supported on this device");
-            return {paddle::Tensor{}, paddle::Tensor{}};
-#endif
+                
+            return result;
         } else {
             PD_THROW("Unsupported data type for AppendAttention");
             return {paddle::Tensor{}, paddle::Tensor{}};
