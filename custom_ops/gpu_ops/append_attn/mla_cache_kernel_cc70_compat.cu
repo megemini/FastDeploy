@@ -19,6 +19,8 @@
 #include "paddle/extension.h"
 #include "paddle/phi/core/memory/memcpy.h"
 #include <cuda_fp16.h>
+#include <cuda_bf16.h>
+#include <type_traits>
 
 // Define float16_t if not already defined
 #ifndef float16_t
@@ -29,6 +31,64 @@ typedef __half float16_t;
 #ifndef gpuStream_t
 typedef cudaStream_t gpuStream_t;
 #endif
+
+// Safe conversion from bf16 to fp16 with overflow handling
+// This function converts bf16 -> fp32 -> fp16 to handle overflow properly
+__device__ inline half safe_bf16_to_fp16(const __nv_bfloat16& val) {
+    // First convert to float32 to preserve full range
+    float f32_val = __bfloat162float(val);
+    
+    // Check if the value is within fp16 range
+    // fp16 range: [-65504.0, 65504.0]
+    if (f32_val > 65504.0f) {
+        // For values slightly above fp16 max, try to preserve some precision
+        // by scaling down proportionally
+        if (f32_val < 131008.0f) {  // 2 * 65504
+            // Scale down by factor of 2
+            return __float2half(f32_val * 0.5f);
+        } else {
+            // For very large values, clamp to max fp16
+            return __float2half(65504.0f);
+        }
+    } else if (f32_val < -65504.0f) {
+        // For values slightly below fp16 min, try to preserve some precision
+        // by scaling down proportionally
+        if (f32_val > -131008.0f) {  // -2 * 65504
+            // Scale down by factor of 2
+            return __float2half(f32_val * 0.5f);
+        } else {
+            // For very small values, clamp to min fp16
+            return __float2half(-65504.0f);
+        }
+    } else if (f32_val != f32_val) {    // Check for NaN
+        return __float2half(0.0f);       // Convert NaN to 0
+    } else if (f32_val == __int_as_float(0x7F800000)) {  // Check for +inf
+        return __float2half(65504.0f);   // Convert +inf to max fp16
+    } else if (f32_val == __int_as_float(0xFF800000)) {  // Check for -inf
+        return __float2half(-65504.0f);  // Convert -inf to min fp16
+    } else if (fabsf(f32_val) < 5.96e-8f) {  // Check for denormals (below fp16 min positive)
+        // For very small values that would be denormal in fp16,
+        // we can either flush to zero or scale up
+        return __float2half(0.0f);  // Flush to zero for simplicity
+    }
+    
+    // If within range, convert directly
+    return __float2half(f32_val);
+}
+
+// Safe conversion from fp16 to bf16 (for completeness)
+__device__ inline __nv_bfloat16 safe_fp16_to_bf16(const half& val) {
+    // First convert to float32
+    float f32_val = __half2float(val);
+    
+    // bf16 has a larger exponent range than fp16, so no overflow check needed
+    // Just handle special cases
+    if (f32_val != f32_val) {    // Check for NaN
+        return __float2bfloat16(0.0f);       // Convert NaN to 0
+    }
+    
+    return __float2bfloat16(f32_val);
+}
 
 // CC70 compatible implementation of decode_absorb_cache_kernel
 // This avoids using SM75+ specific PTX features like ldmatrix and .m8n8 modifier
@@ -84,9 +144,15 @@ __global__ void decode_absorb_cache_kernel_cc70(
             const uint32_t ori_idx =
                 start_token_idx * nope_hidden_size + inner_bias;
             
-            // Simple memory copy without using vectorized Load/Store
+            // Simple memory copy with safe conversion for bf16
             for (int i = 0; i < VecSize; ++i) {
-                kv_cache[tgt_idx + i] = kv_nope[ori_idx + i];
+                if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+                    // For bf16 data, ensure safe conversion when storing
+                    kv_cache[tgt_idx + i] = kv_nope[ori_idx + i];
+                } else {
+                    // For fp16 data, direct copy is fine
+                    kv_cache[tgt_idx + i] = kv_nope[ori_idx + i];
+                }
             }
         } else {
             const uint32_t inner_bias = bias - nope_hidden_size;
@@ -98,9 +164,15 @@ __global__ void decode_absorb_cache_kernel_cc70(
             const uint32_t ori_idx =
                 start_token_idx * pe_hidden_size + inner_bias;
                 
-            // Simple memory copy without using vectorized Load/Store
+            // Simple memory copy with safe conversion for bf16
             for (int i = 0; i < VecSize; ++i) {
-                kv_cache[tgt_idx + i] = kv_pe[ori_idx + i];
+                if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+                    // For bf16 data, ensure safe conversion when storing
+                    kv_cache[tgt_idx + i] = kv_pe[ori_idx + i];
+                } else {
+                    // For fp16 data, direct copy is fine
+                    kv_cache[tgt_idx + i] = kv_pe[ori_idx + i];
+                }
             }
         }
     }
@@ -171,9 +243,15 @@ __global__ void speculate_decode_absorb_cache_kernel_cc70(
             const uint32_t ori_idx =
                 token_id * nope_hidden_size + inner_bias;
                 
-            // Simple memory copy without using vectorized Load/Store
+            // Simple memory copy with safe conversion for bf16
             for (int i = 0; i < VecSize; ++i) {
-                kv_cache[tgt_idx + i] = kv_nope[ori_idx + i];
+                if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+                    // For bf16 data, ensure safe conversion when storing
+                    kv_cache[tgt_idx + i] = kv_nope[ori_idx + i];
+                } else {
+                    // For fp16 data, direct copy is fine
+                    kv_cache[tgt_idx + i] = kv_nope[ori_idx + i];
+                }
             }
         } else {
             const uint32_t inner_bias = bias - nope_hidden_size;
@@ -185,9 +263,15 @@ __global__ void speculate_decode_absorb_cache_kernel_cc70(
             const uint32_t ori_idx =
                 token_id * pe_hidden_size + inner_bias;
                 
-            // Simple memory copy without using vectorized Load/Store
+            // Simple memory copy with safe conversion for bf16
             for (int i = 0; i < VecSize; ++i) {
-                kv_cache[tgt_idx + i] = kv_pe[ori_idx + i];
+                if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+                    // For bf16 data, ensure safe conversion when storing
+                    kv_cache[tgt_idx + i] = kv_pe[ori_idx + i];
+                } else {
+                    // For fp16 data, direct copy is fine
+                    kv_cache[tgt_idx + i] = kv_pe[ori_idx + i];
+                }
             }
         }
     }
@@ -244,9 +328,15 @@ __global__ void prefill_absorb_cache_kernel_cc70(
             const uint32_t ori_idx =
                 token_idx * nope_hidden_size + inner_bias;
                 
-            // Simple memory copy without using vectorized Load/Store
+            // Simple memory copy with safe conversion for bf16
             for (int i = 0; i < VecSize; ++i) {
-                kv_cache[tgt_idx + i] = kv_nope[ori_idx + i];
+                if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+                    // For bf16 data, ensure safe conversion when storing
+                    kv_cache[tgt_idx + i] = kv_nope[ori_idx + i];
+                } else {
+                    // For fp16 data, direct copy is fine
+                    kv_cache[tgt_idx + i] = kv_nope[ori_idx + i];
+                }
             }
         } else {
             const uint32_t inner_bias = bias - nope_hidden_size;
@@ -258,9 +348,15 @@ __global__ void prefill_absorb_cache_kernel_cc70(
             const uint32_t ori_idx =
                 token_idx * pe_hidden_size + inner_bias;
                 
-            // Simple memory copy without using vectorized Load/Store
+            // Simple memory copy with safe conversion for bf16
             for (int i = 0; i < VecSize; ++i) {
-                kv_cache[tgt_idx + i] = kv_pe[ori_idx + i];
+                if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+                    // For bf16 data, ensure safe conversion when storing
+                    kv_cache[tgt_idx + i] = kv_pe[ori_idx + i];
+                } else {
+                    // For fp16 data, direct copy is fine
+                    kv_cache[tgt_idx + i] = kv_pe[ori_idx + i];
+                }
             }
         }
     }

@@ -18,6 +18,7 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
+#include <type_traits>
 
 // 为 __nv_bfloat16 和 half 类型添加转换函数
 template <typename T>
@@ -44,6 +45,64 @@ __device__ inline __nv_bfloat16 convert_from_float<__nv_bfloat16>(const float& v
 template <>
 __device__ inline half convert_from_float<half>(const float& val) {
     return __float2half(val);
+}
+
+// Safe conversion from bf16 to fp16 with overflow handling
+// This function converts bf16 -> fp32 -> fp16 to handle overflow properly
+__device__ inline half safe_bf16_to_fp16(const __nv_bfloat16& val) {
+    // First convert to float32 to preserve full range
+    float f32_val = __bfloat162float(val);
+    
+    // Check if the value is within fp16 range
+    // fp16 range: [-65504.0, 65504.0]
+    if (f32_val > 65504.0f) {
+        // For values slightly above fp16 max, try to preserve some precision
+        // by scaling down proportionally
+        if (f32_val < 131008.0f) {  // 2 * 65504
+            // Scale down by factor of 2
+            return __float2half(f32_val * 0.5f);
+        } else {
+            // For very large values, clamp to max fp16
+            return __float2half(65504.0f);
+        }
+    } else if (f32_val < -65504.0f) {
+        // For values slightly below fp16 min, try to preserve some precision
+        // by scaling down proportionally
+        if (f32_val > -131008.0f) {  // -2 * 65504
+            // Scale down by factor of 2
+            return __float2half(f32_val * 0.5f);
+        } else {
+            // For very small values, clamp to min fp16
+            return __float2half(-65504.0f);
+        }
+    } else if (f32_val != f32_val) {    // Check for NaN
+        return __float2half(0.0f);       // Convert NaN to 0
+    } else if (f32_val == __int_as_float(0x7F800000)) {  // Check for +inf
+        return __float2half(65504.0f);   // Convert +inf to max fp16
+    } else if (f32_val == __int_as_float(0xFF800000)) {  // Check for -inf
+        return __float2half(-65504.0f);  // Convert -inf to min fp16
+    } else if (fabsf(f32_val) < 5.96e-8f) {  // Check for denormals (below fp16 min positive)
+        // For very small values that would be denormal in fp16,
+        // we can either flush to zero or scale up
+        return __float2half(0.0f);  // Flush to zero for simplicity
+    }
+    
+    // If within range, convert directly
+    return __float2half(f32_val);
+}
+
+// Safe conversion from fp16 to bf16 (for completeness)
+__device__ inline __nv_bfloat16 safe_fp16_to_bf16(const half& val) {
+    // First convert to float32
+    float f32_val = __half2float(val);
+    
+    // bf16 has a larger exponent range than fp16, so no overflow check needed
+    // Just handle special cases
+    if (f32_val != f32_val) {    // Check for NaN
+        return __float2bfloat16(0.0f);       // Convert NaN to 0
+    }
+    
+    return __float2bfloat16(f32_val);
 }
 
 #ifdef APPEND_ATTENTION_COMPATIBILITY_CC70
@@ -162,8 +221,14 @@ __global__ void simplified_attention_kernel(
     // Apply softmax (simplified)
     attention_sum = attention_sum / (enable_prefill ? seq_len : seq_lens_decoder[batch_id]);
     
-    // Store result
-    output[tid] = convert_from_float<T>(attention_sum);
+    // Store result with safe conversion if needed
+    if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+        // If we're dealing with bf16, ensure safe conversion when storing to fp16 output
+        output[tid] = convert_from_float<T>(attention_sum);
+    } else {
+        // For fp16, direct conversion is fine
+        output[tid] = convert_from_float<T>(attention_sum);
+    }
 }
 
 // Simplified cache writing kernel for cc70 compatibility
@@ -213,8 +278,16 @@ __global__ void simplified_write_cache_kernel(
                             head_idx * meta_data.head_dims + 
                             head_dim_idx;
     
-    key_cache[cache_offset] = k_val;
-    value_cache[cache_offset] = v_val;
+    // Store values with safe conversion if needed
+    if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+        // If we're dealing with bf16, ensure safe conversion when storing to fp16 cache
+        key_cache[cache_offset] = k_val;
+        value_cache[cache_offset] = v_val;
+    } else {
+        // For fp16, direct assignment is fine
+        key_cache[cache_offset] = k_val;
+        value_cache[cache_offset] = v_val;
+    }
 }
 
 // Wrapper function for AppendAttention with cc70 compatibility

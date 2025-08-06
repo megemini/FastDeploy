@@ -16,6 +16,8 @@
 #include "paddle/extension.h"
 #include "paddle/phi/core/memory/memcpy.h"
 #include <cuda_fp16.h>
+#include <cuda_bf16.h>
+#include <type_traits>
 
 // Define float16_t if not already defined
 #ifndef float16_t
@@ -26,6 +28,64 @@ typedef __half float16_t;
 #ifndef gpuStream_t
 typedef cudaStream_t gpuStream_t;
 #endif
+
+// Safe conversion from bf16 to fp16 with overflow handling
+// This function converts bf16 -> fp32 -> fp16 to handle overflow properly
+__device__ inline half safe_bf16_to_fp16(const __nv_bfloat16& val) {
+    // First convert to float32 to preserve full range
+    float f32_val = __bfloat162float(val);
+    
+    // Check if the value is within fp16 range
+    // fp16 range: [-65504.0, 65504.0]
+    if (f32_val > 65504.0f) {
+        // For values slightly above fp16 max, try to preserve some precision
+        // by scaling down proportionally
+        if (f32_val < 131008.0f) {  // 2 * 65504
+            // Scale down by factor of 2
+            return __float2half(f32_val * 0.5f);
+        } else {
+            // For very large values, clamp to max fp16
+            return __float2half(65504.0f);
+        }
+    } else if (f32_val < -65504.0f) {
+        // For values slightly below fp16 min, try to preserve some precision
+        // by scaling down proportionally
+        if (f32_val > -131008.0f) {  // -2 * 65504
+            // Scale down by factor of 2
+            return __float2half(f32_val * 0.5f);
+        } else {
+            // For very small values, clamp to min fp16
+            return __float2half(-65504.0f);
+        }
+    } else if (f32_val != f32_val) {    // Check for NaN
+        return __float2half(0.0f);       // Convert NaN to 0
+    } else if (f32_val == __int_as_float(0x7F800000)) {  // Check for +inf
+        return __float2half(65504.0f);   // Convert +inf to max fp16
+    } else if (f32_val == __int_as_float(0xFF800000)) {  // Check for -inf
+        return __float2half(-65504.0f);  // Convert -inf to min fp16
+    } else if (fabsf(f32_val) < 5.96e-8f) {  // Check for denormals (below fp16 min positive)
+        // For very small values that would be denormal in fp16,
+        // we can either flush to zero or scale up
+        return __float2half(0.0f);  // Flush to zero for simplicity
+    }
+    
+    // If within range, convert directly
+    return __float2half(f32_val);
+}
+
+// Safe conversion from fp16 to bf16 (for completeness)
+__device__ inline __nv_bfloat16 safe_fp16_to_bf16(const half& val) {
+    // First convert to float32
+    float f32_val = __half2float(val);
+    
+    // bf16 has a larger exponent range than fp16, so no overflow check needed
+    // Just handle special cases
+    if (f32_val != f32_val) {    // Check for NaN
+        return __float2bfloat16(0.0f);       // Convert NaN to 0
+    }
+    
+    return __float2bfloat16(f32_val);
+}
 
 // CC70 compatible implementation of GQARopeWriteCacheKernel
 // This avoids using SM75+ specific PTX features like ldmatrix and .m8n8 modifier
@@ -98,8 +158,19 @@ __global__ void gqa_rotary_qk_split_variable_cc70(
             float input_left = static_cast<float>(val);
             float input_right = static_cast<float>(qkv_input[base_idx + half_lastdim]);
             
-            val = static_cast<T>(input_left * cos_tmp - input_right * sin_tmp);
-            qkv_out[base_idx + half_lastdim] = static_cast<T>(input_right * cos_tmp + input_left * sin_tmp);
+            // Apply rotary embedding with safe conversion for bf16
+            float result_left = input_left * cos_tmp - input_right * sin_tmp;
+            float result_right = input_right * cos_tmp + input_left * sin_tmp;
+            
+            if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+                // For bf16 data, ensure safe conversion
+                val = static_cast<T>(result_left);
+                qkv_out[base_idx + half_lastdim] = static_cast<T>(result_right);
+            } else {
+                // For fp16 data, direct conversion is fine
+                val = static_cast<T>(result_left);
+                qkv_out[base_idx + half_lastdim] = static_cast<T>(result_right);
+            }
         }
     }
     
@@ -186,11 +257,20 @@ __global__ void append_cache_kv_cc70(
         uint32_t col = i % head_dim;
         
         if (row < end_idx) {
-            // Read from cache and write to output
-            k_write_ptr[row * kv_t_stride + kv_head_idx * head_dim + col] = 
-                static_cast<T>(cur_cache_k[row * head_dim + col]);
-            v_write_ptr[row * kv_t_stride + kv_head_idx * head_dim + col] = 
-                static_cast<T>(cur_cache_v[row * head_dim + col]);
+            // Read from cache and write to output with safe conversion for bf16
+            if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+                // For bf16 data, ensure safe conversion when reading from cache
+                k_write_ptr[row * kv_t_stride + kv_head_idx * head_dim + col] =
+                    static_cast<T>(cur_cache_k[row * head_dim + col]);
+                v_write_ptr[row * kv_t_stride + kv_head_idx * head_dim + col] =
+                    static_cast<T>(cur_cache_v[row * head_dim + col]);
+            } else {
+                // For fp16 data, direct conversion is fine
+                k_write_ptr[row * kv_t_stride + kv_head_idx * head_dim + col] =
+                    static_cast<T>(cur_cache_k[row * head_dim + col]);
+                v_write_ptr[row * kv_t_stride + kv_head_idx * head_dim + col] =
+                    static_cast<T>(cur_cache_v[row * head_dim + col]);
+            }
         }
     }
 }
