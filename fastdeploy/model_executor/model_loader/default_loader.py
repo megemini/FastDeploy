@@ -23,6 +23,10 @@ from fastdeploy.model_executor.load_weight_utils import (
     load_composite_checkpoint,
     measure_time,
 )
+from fastdeploy.model_executor.load_weight_utils_cc70_compat import (
+    load_composite_checkpoint_cc70_compat,
+)
+from fastdeploy.config import get_cuda_compute_capability
 from fastdeploy.model_executor.model_loader.base_loader import BaseModelLoader
 from fastdeploy.model_executor.models.model_base import ModelRegistry
 from fastdeploy.platforms import current_platform
@@ -52,12 +56,25 @@ class DefaultModelLoader(BaseModelLoader):
     @measure_time
     def load_weights(self, model, fd_config: FDConfig, architectures: str) -> None:
         model_class = ModelRegistry.get_pretrain_cls(architectures)
-        state_dict = load_composite_checkpoint(
-            fd_config.model_config.model,
-            model_class,
-            fd_config,
-            return_numpy=True,
-        )
+        
+        # Check if we need CC70 compatibility
+        compute_capability = get_cuda_compute_capability()
+        if compute_capability >= 70 and compute_capability < 80:
+            logger.info(f"Using CC70 compatible weight loading for compute capability {compute_capability}")
+            state_dict = load_composite_checkpoint_cc70_compat(
+                fd_config.model_config.model,
+                model_class,
+                fd_config,
+                return_numpy=True,
+            )
+        else:
+            state_dict = load_composite_checkpoint(
+                fd_config.model_config.model,
+                model_class,
+                fd_config,
+                return_numpy=True,
+            )
+        
         model.set_state_dict(state_dict)
         self.clean_memory_fragments(state_dict)
 
