@@ -292,9 +292,8 @@ __global__ void simplified_attention_kernel_with_conversion(
             // Convert from fp16 cache to bf16 for computation if needed
             T k_val;
             if constexpr (std::is_same_v<T, __nv_bfloat16> && std::is_same_v<CacheT, half>) {
-                // Convert fp16 to bf16
-                half cache_val = qkv[key_offset];
-                k_val = safe_fp16_to_bf16(cache_val);
+                // For prefill, we're reading from qkv which is bf16, no conversion needed
+                k_val = qkv[key_offset];
             } else {
                 // Direct assignment for other type combinations
                 k_val = static_cast<T>(qkv[key_offset]);
