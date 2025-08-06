@@ -290,14 +290,14 @@ __global__ void simplified_attention_kernel_with_conversion(
                                   head_dim_idx;
             
             // Convert from fp16 cache to bf16 for computation if needed
-            CacheT cache_val = qkv[key_offset];
             T k_val;
             if constexpr (std::is_same_v<T, __nv_bfloat16> && std::is_same_v<CacheT, half>) {
                 // Convert fp16 to bf16
+                half cache_val = qkv[key_offset];
                 k_val = safe_fp16_to_bf16(cache_val);
             } else {
                 // Direct assignment for other type combinations
-                k_val = static_cast<T>(cache_val);
+                k_val = static_cast<T>(qkv[key_offset]);
             }
             
             // Simple dot product (would be more complex in real implementation)
@@ -333,7 +333,7 @@ __global__ void simplified_attention_kernel_with_conversion(
     }
     
     // Apply softmax (simplified)
-    attention_sum = attention_sum / (enable_prefill ? seq_len : seq_lens_decoder[batch_id]);
+    attention_sum = attention_sum / (enable_prefill ? seq_lens_this_time[batch_id] : seq_lens_decoder[batch_id]);
     
     // Store result
     output[tid] = convert_from_float<T>(attention_sum);
