@@ -231,6 +231,114 @@ __global__ void simplified_attention_kernel(
     }
 }
 
+// Simplified attention kernel with fp16 to bf16 conversion for cc70 compatibility
+template <typename T, typename CacheT>
+__global__ void simplified_attention_kernel_with_conversion(
+    const AppendAttnMetaDataCompat meta_data,
+    const T* __restrict__ qkv,  // [token_num, num_heads, head_dim]
+    const CacheT* __restrict__ key_cache,  // [max_block_num, num_heads, block_size, head_dim]
+    const CacheT* __restrict__ value_cache,  // [max_block_num, num_heads, head_dim, block_size]
+    T* __restrict__ output,  // [token_num, num_heads, head_dim]
+    const int* __restrict__ seq_lens_this_time,
+    const int* __restrict__ seq_lens_decoder,
+    const int* __restrict__ batch_id_per_token,
+    const int* __restrict__ block_tables,
+    const int* __restrict__ batch_ids,
+    const int* __restrict__ tile_ids_per_batch,
+    const int num_blocks,
+    const int block_shape_q,
+    const int max_input_length,
+    const int max_len_kv,
+    const bool causal,
+    const bool enable_prefill,
+    const bool enable_decoder) {
+    
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total_elements = meta_data.token_nums * meta_data.q_num_heads * meta_data.head_dims;
+    
+    if (tid >= total_elements) return;
+    
+    // Calculate position in tensors
+    const int head_dim_idx = tid % meta_data.head_dims;
+    const int head_idx = (tid / meta_data.head_dims) % meta_data.q_num_heads;
+    const int token_idx = tid / (meta_data.q_num_heads * meta_data.head_dims);
+    
+    if (token_idx >= meta_data.token_nums) return;
+    
+    // Get batch ID for this token
+    const int batch_id = batch_id_per_token[token_idx];
+    if (batch_id < 0 || batch_id >= meta_data.batch_size) return;
+    
+    // Calculate Q offset
+    const int q_offset = token_idx * meta_data.q_num_heads * meta_data.head_dims +
+                        head_idx * meta_data.head_dims +
+                        head_dim_idx;
+    
+    // Get Q value
+    const T q_val = qkv[q_offset];
+    
+    // Simplified attention computation
+    float attention_sum = 0.0f;
+    
+    // For prefill attention
+    if (enable_prefill) {
+        const int seq_len = seq_lens_this_time[batch_id];
+        for (int i = 0; i < seq_len; ++i) {
+            // Get key value from QKV tensor (for prefill)
+            const int key_offset = i * (meta_data.q_num_heads + 2 * meta_data.kv_num_heads) * meta_data.head_dims +
+                                  (meta_data.q_num_heads + head_idx) * meta_data.head_dims +
+                                  head_dim_idx;
+            
+            // Convert from fp16 cache to bf16 for computation if needed
+            CacheT cache_val = qkv[key_offset];
+            T k_val;
+            if constexpr (std::is_same_v<T, __nv_bfloat16> && std::is_same_v<CacheT, half>) {
+                // Convert fp16 to bf16
+                k_val = safe_fp16_to_bf16(cache_val);
+            } else {
+                // Direct assignment for other type combinations
+                k_val = static_cast<T>(cache_val);
+            }
+            
+            // Simple dot product (would be more complex in real implementation)
+            attention_sum += convert_to_float(q_val) * convert_to_float(k_val);
+        }
+    }
+    
+    // For decoder attention
+    if (enable_decoder) {
+        // Compute attention over cached key/value pairs
+        const int dec_seq_len = seq_lens_decoder[batch_id];
+        for (int i = 0; i < dec_seq_len; ++i) {
+            // Get key value from cache
+            // Simplified - would need to handle block tables and cache indexing
+            const int key_offset = i * meta_data.kv_num_heads * meta_data.head_dims +
+                                  (head_idx % meta_data.kv_num_heads) * meta_data.head_dims +
+                                  head_dim_idx;
+            
+            // Convert from fp16 cache to bf16 for computation if needed
+            CacheT cache_val = key_cache[key_offset];
+            T k_val;
+            if constexpr (std::is_same_v<T, __nv_bfloat16> && std::is_same_v<CacheT, half>) {
+                // Convert fp16 to bf16
+                k_val = safe_fp16_to_bf16(cache_val);
+            } else {
+                // Direct assignment for other type combinations
+                k_val = static_cast<T>(cache_val);
+            }
+            
+            // Simple dot product
+            attention_sum += convert_to_float(q_val) * convert_to_float(k_val);
+        }
+    }
+    
+    // Apply softmax (simplified)
+    attention_sum = attention_sum / (enable_prefill ? seq_len : seq_lens_decoder[batch_id]);
+    
+    // Store result
+    output[tid] = convert_from_float<T>(attention_sum);
+}
+
 // Simplified cache writing kernel for cc70 compatibility
 template <typename T>
 __global__ void simplified_write_cache_kernel(
@@ -287,6 +395,65 @@ __global__ void simplified_write_cache_kernel(
         // For fp16, direct assignment is fine
         key_cache[cache_offset] = k_val;
         value_cache[cache_offset] = v_val;
+    }
+}
+
+// Simplified cache writing kernel with bf16 to fp16 conversion for cc70 compatibility
+template <typename T, typename CacheT>
+__global__ void simplified_write_cache_kernel_with_conversion(
+    const AppendAttnMetaDataCompat meta_data,
+    const T* __restrict__ qkv,  // [token_num, num_heads, head_dim]
+    CacheT* __restrict__ key_cache,  // [max_block_num, num_heads, block_size, head_dim]
+    CacheT* __restrict__ value_cache,  // [max_block_num, num_heads, head_dim, block_size]
+    const int* __restrict__ seq_lens_this_time,
+    const int* __restrict__ seq_lens_decoder,
+    const int* __restrict__ batch_id_per_token,
+    const int* __restrict__ block_tables,
+    const int* __restrict__ batch_ids,
+    const int* __restrict__ tile_ids_per_batch,
+    const int num_blocks,
+    const int block_shape_q,
+    const bool is_decoder) {
+    
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total_kv_elements = meta_data.token_nums * meta_data.kv_num_heads * meta_data.head_dims;
+    
+    if (tid >= total_kv_elements) return;
+    
+    // Calculate position in KV tensors
+    const int head_dim_idx = tid % meta_data.head_dims;
+    const int head_idx = (tid / meta_data.head_dims) % meta_data.kv_num_heads;
+    const int token_idx = tid / (meta_data.kv_num_heads * meta_data.head_dims);
+    
+    if (token_idx >= meta_data.token_nums) return;
+    
+    // Get batch ID for this token
+    const int batch_id = batch_id_per_token[token_idx];
+    if (batch_id < 0 || batch_id >= meta_data.batch_size) return;
+    
+    // Calculate QKV offsets
+    const int qkv_offset = token_idx * (meta_data.q_num_heads + 2 * meta_data.kv_num_heads) * meta_data.head_dims;
+    const int k_offset = qkv_offset + (meta_data.q_num_heads + head_idx) * meta_data.head_dims;
+    const int v_offset = qkv_offset + (meta_data.q_num_heads + meta_data.kv_num_heads + head_idx) * meta_data.head_dims;
+    
+    // Get K and V values
+    const T k_val = qkv[k_offset + head_dim_idx];
+    const T v_val = qkv[v_offset + head_dim_idx];
+    
+    // Simplified cache writing - would need to handle block tables in real implementation
+    const int cache_offset = token_idx * meta_data.kv_num_heads * meta_data.head_dims +
+                            head_idx * meta_data.head_dims +
+                            head_dim_idx;
+    
+    // Store values with safe conversion from bf16 to fp16
+    if constexpr (std::is_same_v<T, __nv_bfloat16> && std::is_same_v<CacheT, half>) {
+        // Convert bf16 to fp16 with safe conversion
+        key_cache[cache_offset] = safe_bf16_to_fp16(k_val);
+        value_cache[cache_offset] = safe_bf16_to_fp16(v_val);
+    } else {
+        // Direct assignment for other type combinations
+        key_cache[cache_offset] = static_cast<CacheT>(k_val);
+        value_cache[cache_offset] = static_cast<CacheT>(v_val);
     }
 }
 
@@ -613,6 +780,9 @@ template <> std::vector<paddle::Tensor> AppendAttentionKernelCC70<__nv_bfloat16>
     typedef __nv_bfloat16 DataType_;
     typedef paddle::bfloat16 data_t;
     
+    // Check if the cache is in fp16 format while input is bf16
+    bool cache_is_fp16 = (key_cache.dtype() == paddle::DataType::FLOAT16);
+    
     // Write to cache first
     if (max_enc_len_this_time > 0) {
         // Encoder cache writing
@@ -620,20 +790,39 @@ template <> std::vector<paddle::Tensor> AppendAttentionKernelCC70<__nv_bfloat16>
         const int total_kv_elements = meta_data.token_nums * meta_data.kv_num_heads * meta_data.head_dims;
         const int blocks = (total_kv_elements + threads_per_block - 1) / threads_per_block;
         
-        simplified_write_cache_kernel<DataType_><<<blocks, threads_per_block, 0, stream>>>(
-            compat_meta,
-            reinterpret_cast<const DataType_*>(qkv.data<data_t>()),
-            reinterpret_cast<DataType_*>(const_cast<paddle::Tensor&>(key_cache).data<data_t>()),
-            reinterpret_cast<DataType_*>(const_cast<paddle::Tensor&>(value_cache).data<data_t>()),
-            seq_lens_this_time.data<int>(),
-            seq_lens_decoder.data<int>(),
-            batch_id_per_token.data<int>(),
-            block_tables.data<int>(),
-            encoder_batch_ids.data<int>(),
-            encoder_tile_ids_per_batch.data<int>(),
-            encoder_num_blocks.data<int>()[0],
-            encoder_block_shape_q,
-            false);  // is_decoder = false for encoder
+        if (cache_is_fp16) {
+            // Cache is fp16, input is bf16 - need to use safe conversion
+            simplified_write_cache_kernel_with_conversion<DataType_, half><<<blocks, threads_per_block, 0, stream>>>(
+                compat_meta,
+                reinterpret_cast<const DataType_*>(qkv.data<data_t>()),
+                reinterpret_cast<half*>(const_cast<paddle::Tensor&>(key_cache).data<paddle::float16>()),
+                reinterpret_cast<half*>(const_cast<paddle::Tensor&>(value_cache).data<paddle::float16>()),
+                seq_lens_this_time.data<int>(),
+                seq_lens_decoder.data<int>(),
+                batch_id_per_token.data<int>(),
+                block_tables.data<int>(),
+                encoder_batch_ids.data<int>(),
+                encoder_tile_ids_per_batch.data<int>(),
+                encoder_num_blocks.data<int>()[0],
+                encoder_block_shape_q,
+                false);  // is_decoder = false for encoder
+        } else {
+            // Both input and cache are bf16
+            simplified_write_cache_kernel<DataType_><<<blocks, threads_per_block, 0, stream>>>(
+                compat_meta,
+                reinterpret_cast<const DataType_*>(qkv.data<data_t>()),
+                reinterpret_cast<DataType_*>(const_cast<paddle::Tensor&>(key_cache).data<data_t>()),
+                reinterpret_cast<DataType_*>(const_cast<paddle::Tensor&>(value_cache).data<data_t>()),
+                seq_lens_this_time.data<int>(),
+                seq_lens_decoder.data<int>(),
+                batch_id_per_token.data<int>(),
+                block_tables.data<int>(),
+                encoder_batch_ids.data<int>(),
+                encoder_tile_ids_per_batch.data<int>(),
+                encoder_num_blocks.data<int>()[0],
+                encoder_block_shape_q,
+                false);  // is_decoder = false for encoder
+        }
     }
     
     // Compute attention
@@ -642,25 +831,49 @@ template <> std::vector<paddle::Tensor> AppendAttentionKernelCC70<__nv_bfloat16>
         const int total_elements = meta_data.token_nums * meta_data.q_num_heads * meta_data.head_dims;
         const int blocks = (total_elements + threads_per_block - 1) / threads_per_block;
         
-        simplified_attention_kernel<DataType_><<<blocks, threads_per_block, 0, stream>>>(
-            compat_meta,
-            reinterpret_cast<const DataType_*>(qkv.data<data_t>()),
-            reinterpret_cast<const DataType_*>(key_cache.data<data_t>()),
-            reinterpret_cast<const DataType_*>(value_cache.data<data_t>()),
-            reinterpret_cast<DataType_*>(fmha_out.data<data_t>()),
-            seq_lens_this_time.data<int>(),
-            seq_lens_decoder.data<int>(),
-            batch_id_per_token.data<int>(),
-            block_tables.data<int>(),
-            (max_enc_len_this_time > 0) ? encoder_batch_ids.data<int>() : decoder_batch_ids.data<int>(),
-            (max_enc_len_this_time > 0) ? encoder_tile_ids_per_batch.data<int>() : decoder_tile_ids_per_batch.data<int>(),
-            (max_enc_len_this_time > 0) ? encoder_num_blocks.data<int>()[0] : decoder_num_blocks.data<int>()[0],
-            (max_enc_len_this_time > 0) ? encoder_block_shape_q : decoder_block_shape_q,
-            max_input_length,
+        if (cache_is_fp16) {
+            // Cache is fp16, input is bf16 - need to use safe conversion
+            simplified_attention_kernel_with_conversion<DataType_, half><<<blocks, threads_per_block, 0, stream>>>(
+                compat_meta,
+                reinterpret_cast<const DataType_*>(qkv.data<data_t>()),
+                reinterpret_cast<const half*>(key_cache.data<paddle::float16>()),
+                reinterpret_cast<const half*>(value_cache.data<paddle::float16>()),
+                reinterpret_cast<DataType_*>(fmha_out.data<data_t>()),
+                seq_lens_this_time.data<int>(),
+                seq_lens_decoder.data<int>(),
+                batch_id_per_token.data<int>(),
+                block_tables.data<int>(),
+                (max_enc_len_this_time > 0) ? encoder_batch_ids.data<int>() : decoder_batch_ids.data<int>(),
+                (max_enc_len_this_time > 0) ? encoder_tile_ids_per_batch.data<int>() : decoder_tile_ids_per_batch.data<int>(),
+                (max_enc_len_this_time > 0) ? encoder_num_blocks.data<int>()[0] : decoder_num_blocks.data<int>()[0],
+                (max_enc_len_this_time > 0) ? encoder_block_shape_q : decoder_block_shape_q,
+                max_input_length,
             max_len_kv.data<int>()[0],
             causal,
             max_dec_len_this_time > 0,
             max_enc_len_this_time > 0);
+        } else {
+            // Both input and cache are bf16
+            simplified_attention_kernel<DataType_><<<blocks, threads_per_block, 0, stream>>>(
+                compat_meta,
+                reinterpret_cast<const DataType_*>(qkv.data<data_t>()),
+                reinterpret_cast<const DataType_*>(key_cache.data<data_t>()),
+                reinterpret_cast<const DataType_*>(value_cache.data<data_t>()),
+                reinterpret_cast<DataType_*>(fmha_out.data<data_t>()),
+                seq_lens_this_time.data<int>(),
+                seq_lens_decoder.data<int>(),
+                batch_id_per_token.data<int>(),
+                block_tables.data<int>(),
+                (max_enc_len_this_time > 0) ? encoder_batch_ids.data<int>() : decoder_batch_ids.data<int>(),
+                (max_enc_len_this_time > 0) ? encoder_tile_ids_per_batch.data<int>() : decoder_tile_ids_per_batch.data<int>(),
+                (max_enc_len_this_time > 0) ? encoder_num_blocks.data<int>()[0] : decoder_num_blocks.data<int>()[0],
+                (max_enc_len_this_time > 0) ? encoder_block_shape_q : decoder_block_shape_q,
+                max_input_length,
+            max_len_kv.data<int>()[0],
+            causal,
+            max_dec_len_this_time > 0,
+            max_enc_len_this_time > 0);
+        }
     }
     
     return {fmha_out, qkv_out};
