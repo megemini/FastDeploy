@@ -43,11 +43,11 @@ class Attention(nn.Layer):
         v_head_dim: int = -1,
         rope_type: str = "",
         qkv_bias: Optional[paddle.Tensor] = None,
-        qkv_scale: Optional[paddle.Tensor] = None,
+        qkv_out_scales: Optional[paddle.Tensor] = None,
         prefix: str = "",
         out_scale: float = -1.0,
-        linear_shift: paddle.Tensor = None,
-        linear_smooth: paddle.Tensor = None,
+        out_linear_shifts: paddle.Tensor = None,
+        out_linear_smooths: paddle.Tensor = None,
         use_neox_rotary_style: bool = False,
         use_qk_norm: bool = False,
         rms_norm_eps: float = 1e-6,
@@ -86,10 +86,10 @@ class Attention(nn.Layer):
         self.qk_head_dim: int = self.head_dim
         self.prefix: str = prefix
         # not use
-        self.linear_shift: paddle.Tensor | None = linear_shift
-        self.linear_smooth: paddle.Tensor | None = linear_smooth
+        self.out_linear_shifts: paddle.Tensor | None = out_linear_shifts
+        self.out_linear_smooths: paddle.Tensor | None = out_linear_smooths
         self.qkv_bias: paddle.Tensor | None = qkv_bias
-        self.qkv_scale: paddle.Tensor | None = qkv_scale
+        self.qkv_out_scales: paddle.Tensor | None = qkv_out_scales
         self._dtype = self._helper.get_default_dtype()
 
         self.out_scale: float = out_scale

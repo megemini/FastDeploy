@@ -139,12 +139,12 @@ class SmoothQuantLinearMethod(QuantMethodBase):
     def create_weights(self, layer):
         linear_shift_shape = [layer.output_size]
         linear_smooth_shape = [layer.output_size]
-        layer.linear_shift = self.create_parameter(
+        layer.out_linear_shifts = self.create_parameter(
             shape=linear_shift_shape,
             dtype=layer._dtype,
             is_bias=False,
         )
-        layer.linear_smooth = layer.create_parameter(
+        layer.out_linear_smooths = layer.create_parameter(
             shape=linear_smooth_shape,
             dtype=layer._dtype,
             is_bias=False,
@@ -155,18 +155,18 @@ class SmoothQuantLinearMethod(QuantMethodBase):
             shift_tensor = get_tensor(layer.state_dict.pop(layer.shift_key)).astype(paddle.get_default_dtype())
         else:
             shift_tensor = paddle.zeros(
-                shape=layer.linear_shift_shape,
+                shape=layer.out_linear_shifts_shape,
                 dtype=paddle.get_default_dtype(),
             )
-        layer.linear_shift.set_value(shift_tensor)
+        layer.out_linear_shifts.set_value(shift_tensor)
         if layer.smooth_key in layer.state_dict:
             smooth_tensor = get_tensor(layer.state_dict.pop(layer.smooth_key)).astype(paddle.get_default_dtype())
         else:
             smooth_tensor = paddle.ones(
-                shape=[layer.linear_smooth_shape],
+                shape=[layer.out_linear_smooths_shape],
                 dtype=paddle.get_default_dtype(),
             )
-        layer.linear_smooth.set_value(smooth_tensor)
+        layer.out_linear_smooths.set_value(smooth_tensor)
 
     def apply(self, layer, x):
         pass
