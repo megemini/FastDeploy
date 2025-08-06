@@ -27,7 +27,7 @@ try:
 except:
     flash_attention_v3_varlen = None
 
-from fastdeploy.config import FDConfig
+from fastdeploy.config import FDConfig, get_cuda_compute_capability, get_compatible_dtype
 from fastdeploy.model_executor.layers.attention.attention import Attention
 from fastdeploy.model_executor.layers.attention.base_attention_backend import (
     AttentionBackend,
@@ -250,11 +250,22 @@ class FlashAttentionBackend(AttentionBackend):
                 self.rank, int(self.device_id), self.keep_pd_step_flag
             )
 
-        if metadata._dtype == "bfloat16":
+        # Check compute capability for CC70 compatibility
+        compute_capability = get_cuda_compute_capability()
+        if compute_capability >= 70 and compute_capability < 80:
+            # For CC70-79, use fp16 even if default is bf16
+            compatible_dtype = get_compatible_dtype("bfloat16")
+            if compatible_dtype == "float16":
+                metadata._dtype = paddle.float16
+                metadata._fuse_kernel_compute_dtype = "fp16"
+                logger.info(f"Using fp16 for attention computation on CC{compute_capability}")
+        
+        # Set compute dtype based on metadata dtype
+        if metadata._dtype == paddle.bfloat16:
             metadata._fuse_kernel_compute_dtype = "bf16"
-        elif metadata._dtype == "float16":
+        elif metadata._dtype == paddle.float16:
             metadata._fuse_kernel_compute_dtype = "fp16"
-        elif metadata._dtype == "float32":
+        elif metadata._dtype == paddle.float32:
             metadata._fuse_kernel_compute_dtype = "fp32"
 
         metadata.max_len_tensor_cpu = forward_meta.max_len_tensor_cpu

@@ -24,7 +24,8 @@ import paddle
 if TYPE_CHECKING:
     from fastdeploy.model_executor.forward_meta import ForwardMeta
 
-from fastdeploy.config import FDConfig
+from fastdeploy.config import FDConfig, get_cuda_compute_capability, get_compatible_dtype
+from paddleformers.utils.log import logger
 from fastdeploy.model_executor.layers.attention.attention import Attention
 from fastdeploy.model_executor.layers.attention.base_attention_backend import (
     AttentionBackend,
@@ -92,12 +93,24 @@ class BlockAttentionBackend(AttentionBackend):
     def init_attention_metadata(self, forward_meta: ForwardMeta):
         """Initialize attntion metadata hence all layers in the forward pass can reuse it."""
         metadata = BlockAttentionMetadata()
+        # Check compute capability for CC70 compatibility
+        compute_capability = get_cuda_compute_capability()
         metadata._dtype = paddle.get_default_dtype()
-        if metadata._dtype == "bfloat16":
+        
+        if compute_capability >= 70 and compute_capability < 80:
+            # For CC70-79, use fp16 even if default is bf16
+            compatible_dtype = get_compatible_dtype("bfloat16")
+            if compatible_dtype == "float16":
+                metadata._dtype = paddle.float16
+                metadata._fuse_kernel_compute_dtype = "fp16"
+                logger.info(f"Using fp16 for block multihead attention computation on CC{compute_capability}")
+        
+        # Set compute dtype based on metadata dtype
+        if metadata._dtype == paddle.bfloat16:
             metadata._fuse_kernel_compute_dtype = "bf16"
-        elif metadata._dtype == "float16":
+        elif metadata._dtype == paddle.float16:
             metadata._fuse_kernel_compute_dtype = "fp16"
-        elif metadata._dtype == "float32":
+        elif metadata._dtype == paddle.float32:
             metadata._fuse_kernel_compute_dtype = "fp32"
         metadata.block_tables = forward_meta.block_tables
         metadata.rotary_embs = forward_meta.rotary_embs
