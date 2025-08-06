@@ -22,6 +22,7 @@ import fastdeploy
 from fastdeploy.distributed.communication import tensor_model_parallel_all_reduce
 from fastdeploy.model_executor.layers.utils import get_tensor
 from fastdeploy.model_executor.ops.gpu import count_tokens_per_expert_func, deep_gemm
+from fastdeploy.config import get_compatible_dtype
 
 from ..utils import create_and_set_parameter
 from .fused_moe_backend_base import MoEMethodBase
@@ -182,9 +183,11 @@ class DeepGemmFusedMoeMethod(MoEMethodBase):
             permute_scale = permute_scale.transpose([1, 0])
 
             # up_gate_proj
+            # Get compatible dtype for CC70
+            compatible_dtype = get_compatible_dtype("bfloat16")
             ffn_out = paddle.empty(
                 (permute_input.shape[0], layer.up_gate_proj_weight.shape[1]),
-                dtype=paddle.bfloat16,
+                dtype=paddle.bfloat16 if compatible_dtype == "bfloat16" else paddle.float16,
             )
             deep_gemm.m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(
                 (permute_input, permute_scale),
@@ -204,7 +207,7 @@ class DeepGemmFusedMoeMethod(MoEMethodBase):
 
             ffn_out = paddle.empty(
                 (ffn_out.shape[0], layer.down_proj_weight.shape[1]),
-                dtype=paddle.bfloat16,
+                dtype=paddle.bfloat16 if compatible_dtype == "bfloat16" else paddle.float16,
             )
             deep_gemm.m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(
                 (ffn_in_x, ffn_in_x_scale_tensor),
@@ -224,7 +227,7 @@ class DeepGemmFusedMoeMethod(MoEMethodBase):
             )[0]
 
         else:
-            tmp_ffn_out = paddle.cast(recv_x[0], paddle.bfloat16)
+            tmp_ffn_out = paddle.cast(recv_x[0], paddle.bfloat16 if compatible_dtype == "bfloat16" else paddle.float16)
 
         # 5. EP combine
         return self.ep_prefill_runner.combine(tmp_ffn_out, handle, recv_topk_weights)
@@ -247,13 +250,15 @@ class DeepGemmFusedMoeMethod(MoEMethodBase):
 
         # 3. Compute ffn
         assert isinstance(permute_input, tuple)
+        # Get compatible dtype for CC70
+        compatible_dtype = get_compatible_dtype("bfloat16")
         up_gate_proj_out = paddle.empty(
             [
                 layer.num_local_experts,
                 layer.ep_size * layer.fd_config.model_config.num_max_dispatch_tokens_per_rank,
                 layer.moe_intermediate_size * 2,
             ],
-            dtype=paddle.bfloat16,
+            dtype=paddle.bfloat16 if compatible_dtype == "bfloat16" else paddle.float16,
         )
 
         ffn_out = paddle.empty(
@@ -262,7 +267,7 @@ class DeepGemmFusedMoeMethod(MoEMethodBase):
                 layer.ep_size * layer.fd_config.model_config.num_max_dispatch_tokens_per_rank,
                 layer.hidden_size,
             ],
-            dtype=paddle.bfloat16,
+            dtype=paddle.bfloat16 if compatible_dtype == "bfloat16" else paddle.float16,
         )
 
         expected_m = 128
@@ -347,9 +352,11 @@ class DeepGemmFusedMoeMethod(MoEMethodBase):
         permute_scale = permute_scale.transpose([1, 0])
 
         # up_gate_proj
+        # Get compatible dtype for CC70
+        compatible_dtype = get_compatible_dtype("bfloat16")
         ffn_out = paddle.empty(
             (permute_input.shape[0], layer.up_gate_proj_weight.shape[1]),
-            dtype=paddle.bfloat16,
+            dtype=paddle.bfloat16 if compatible_dtype == "bfloat16" else paddle.float16,
         )
         deep_gemm.m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(
             (permute_input, permute_scale),
@@ -370,7 +377,7 @@ class DeepGemmFusedMoeMethod(MoEMethodBase):
 
         ffn_out = paddle.empty(
             (ffn_out.shape[0], layer.down_proj_weight.shape[1]),
-            dtype=paddle.bfloat16,
+            dtype=paddle.bfloat16 if compatible_dtype == "bfloat16" else paddle.float16,
         )
         deep_gemm.m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(
             (ffn_in_x, ffn_in_x_scale_tensor),

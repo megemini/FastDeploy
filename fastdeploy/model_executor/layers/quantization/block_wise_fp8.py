@@ -21,6 +21,7 @@ import paddle
 import fastdeploy
 from fastdeploy import envs
 from fastdeploy.model_executor.layers.moe import FusedMoE
+from fastdeploy.config import get_compatible_dtype
 
 from ..utils import get_tensor, per_block_cast_to_fp8
 from .quant_base import QuantConfigBase, QuantMethodBase
@@ -118,7 +119,10 @@ class BlockWiseFP8LinearMethod(QuantMethodBase):
         x, x_scale_tensor = fastdeploy.model_executor.ops.gpu.per_token_quant_padding(
             x, self.quant_config.weight_block_size[0]
         )
-        linear_out = paddle.empty((x.shape[0], layer.output_size), dtype=paddle.bfloat16)
+        # Get compatible dtype for CC70
+        compatible_dtype = get_compatible_dtype("bfloat16")
+        linear_out = paddle.empty((x.shape[0], layer.output_size),
+                                dtype=paddle.bfloat16 if compatible_dtype == "bfloat16" else paddle.float16)
         from fastdeploy.model_executor.ops.gpu import deep_gemm
 
         deep_gemm.gemm_fp8_fp8_bf16_nt(

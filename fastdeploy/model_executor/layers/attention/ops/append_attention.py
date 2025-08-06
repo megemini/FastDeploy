@@ -19,6 +19,7 @@ from typing import Optional
 import paddle
 
 from fastdeploy.platforms import current_platform
+from fastdeploy.config import get_compatible_dtype
 
 if current_platform.is_cuda():
     from fastdeploy.model_executor.ops.gpu import (
@@ -60,7 +61,7 @@ def append_attention(
     out_linear_shifts: Optional[paddle.Tensor] = None,
     out_linear_smooths: Optional[paddle.Tensor] = None,
     kv_signal_data: Optional[paddle.Tensor] = None,
-    compute_type: str = "bf16",
+    compute_type: str = get_compatible_dtype("bfloat16"),
     cache_quant_type: str = "none",
     use_neox_rotary_style: bool = False,
     rope_3d: bool = False,
