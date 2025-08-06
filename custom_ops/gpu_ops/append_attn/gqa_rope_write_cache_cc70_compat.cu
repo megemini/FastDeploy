@@ -164,8 +164,18 @@ __global__ void gqa_rotary_qk_split_variable_cc70(
             
             if constexpr (std::is_same_v<T, __nv_bfloat16>) {
                 // For bf16 data, ensure safe conversion
-                val = static_cast<T>(result_left);
-                qkv_out[base_idx + half_lastdim] = static_cast<T>(result_right);
+                // Check if the result is within bf16 range
+                if (fabsf(result_left) > 3.38953139e38f) {  // bf16 max
+                    val = (result_left > 0) ? static_cast<T>(3.38953139e38f) : static_cast<T>(-3.38953139e38f);
+                } else {
+                    val = static_cast<T>(result_left);
+                }
+                
+                if (fabsf(result_right) > 3.38953139e38f) {  // bf16 max
+                    qkv_out[base_idx + half_lastdim] = (result_right > 0) ? static_cast<T>(3.38953139e38f) : static_cast<T>(-3.38953139e38f);
+                } else {
+                    qkv_out[base_idx + half_lastdim] = static_cast<T>(result_right);
+                }
             } else {
                 // For fp16 data, direct conversion is fine
                 val = static_cast<T>(result_left);
@@ -260,10 +270,19 @@ __global__ void append_cache_kv_cc70(
             // Read from cache and write to output with safe conversion for bf16
             if constexpr (std::is_same_v<T, __nv_bfloat16>) {
                 // For bf16 data, ensure safe conversion when reading from cache
-                k_write_ptr[row * kv_t_stride + kv_head_idx * head_dim + col] =
-                    static_cast<T>(cur_cache_k[row * head_dim + col]);
-                v_write_ptr[row * kv_t_stride + kv_head_idx * head_dim + col] =
-                    static_cast<T>(cur_cache_v[row * head_dim + col]);
+                // Check if cache is fp16 while output is bf16
+                if constexpr (std::is_same_v<CacheT, half>) {
+                    k_write_ptr[row * kv_t_stride + kv_head_idx * head_dim + col] =
+                        safe_fp16_to_bf16(cur_cache_k[row * head_dim + col]);
+                    v_write_ptr[row * kv_t_stride + kv_head_idx * head_dim + col] =
+                        safe_fp16_to_bf16(cur_cache_v[row * head_dim + col]);
+                } else {
+                    // Both are bf16, direct copy is fine
+                    k_write_ptr[row * kv_t_stride + kv_head_idx * head_dim + col] =
+                        static_cast<T>(cur_cache_k[row * head_dim + col]);
+                    v_write_ptr[row * kv_t_stride + kv_head_idx * head_dim + col] =
+                        static_cast<T>(cur_cache_v[row * head_dim + col]);
+                }
             } else {
                 // For fp16 data, direct conversion is fine
                 k_write_ptr[row * kv_t_stride + kv_head_idx * head_dim + col] =

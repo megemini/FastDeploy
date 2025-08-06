@@ -148,7 +148,13 @@ __global__ void decode_absorb_cache_kernel_cc70(
             for (int i = 0; i < VecSize; ++i) {
                 if constexpr (std::is_same_v<T, __nv_bfloat16>) {
                     // For bf16 data, ensure safe conversion when storing
-                    kv_cache[tgt_idx + i] = kv_nope[ori_idx + i];
+                    // Check if cache is fp16 while input is bf16
+                    if constexpr (std::is_same_v<decltype(kv_cache[tgt_idx + i]), half>) {
+                        kv_cache[tgt_idx + i] = safe_bf16_to_fp16(kv_nope[ori_idx + i]);
+                    } else {
+                        // Both are bf16, direct copy is fine
+                        kv_cache[tgt_idx + i] = kv_nope[ori_idx + i];
+                    }
                 } else {
                     // For fp16 data, direct copy is fine
                     kv_cache[tgt_idx + i] = kv_nope[ori_idx + i];
@@ -168,7 +174,13 @@ __global__ void decode_absorb_cache_kernel_cc70(
             for (int i = 0; i < VecSize; ++i) {
                 if constexpr (std::is_same_v<T, __nv_bfloat16>) {
                     // For bf16 data, ensure safe conversion when storing
-                    kv_cache[tgt_idx + i] = kv_pe[ori_idx + i];
+                    // Check if cache is fp16 while input is bf16
+                    if constexpr (std::is_same_v<decltype(kv_cache[tgt_idx + i]), half>) {
+                        kv_cache[tgt_idx + i] = safe_bf16_to_fp16(kv_pe[ori_idx + i]);
+                    } else {
+                        // Both are bf16, direct copy is fine
+                        kv_cache[tgt_idx + i] = kv_pe[ori_idx + i];
+                    }
                 } else {
                     // For fp16 data, direct copy is fine
                     kv_cache[tgt_idx + i] = kv_pe[ori_idx + i];
@@ -247,7 +259,13 @@ __global__ void speculate_decode_absorb_cache_kernel_cc70(
             for (int i = 0; i < VecSize; ++i) {
                 if constexpr (std::is_same_v<T, __nv_bfloat16>) {
                     // For bf16 data, ensure safe conversion when storing
-                    kv_cache[tgt_idx + i] = kv_nope[ori_idx + i];
+                    // Check if cache is fp16 while input is bf16
+                    if constexpr (std::is_same_v<decltype(kv_cache[tgt_idx + i]), half>) {
+                        kv_cache[tgt_idx + i] = safe_bf16_to_fp16(kv_nope[ori_idx + i]);
+                    } else {
+                        // Both are bf16, direct copy is fine
+                        kv_cache[tgt_idx + i] = kv_nope[ori_idx + i];
+                    }
                 } else {
                     // For fp16 data, direct copy is fine
                     kv_cache[tgt_idx + i] = kv_nope[ori_idx + i];
@@ -267,7 +285,13 @@ __global__ void speculate_decode_absorb_cache_kernel_cc70(
             for (int i = 0; i < VecSize; ++i) {
                 if constexpr (std::is_same_v<T, __nv_bfloat16>) {
                     // For bf16 data, ensure safe conversion when storing
-                    kv_cache[tgt_idx + i] = kv_pe[ori_idx + i];
+                    // Check if cache is fp16 while input is bf16
+                    if constexpr (std::is_same_v<decltype(kv_cache[tgt_idx + i]), half>) {
+                        kv_cache[tgt_idx + i] = safe_bf16_to_fp16(kv_pe[ori_idx + i]);
+                    } else {
+                        // Both are bf16, direct copy is fine
+                        kv_cache[tgt_idx + i] = kv_pe[ori_idx + i];
+                    }
                 } else {
                     // For fp16 data, direct copy is fine
                     kv_cache[tgt_idx + i] = kv_pe[ori_idx + i];
@@ -332,7 +356,13 @@ __global__ void prefill_absorb_cache_kernel_cc70(
             for (int i = 0; i < VecSize; ++i) {
                 if constexpr (std::is_same_v<T, __nv_bfloat16>) {
                     // For bf16 data, ensure safe conversion when storing
-                    kv_cache[tgt_idx + i] = kv_nope[ori_idx + i];
+                    // Check if cache is fp16 while input is bf16
+                    if constexpr (std::is_same_v<decltype(kv_cache[tgt_idx + i]), half>) {
+                        kv_cache[tgt_idx + i] = safe_bf16_to_fp16(kv_nope[ori_idx + i]);
+                    } else {
+                        // Both are bf16, direct copy is fine
+                        kv_cache[tgt_idx + i] = kv_nope[ori_idx + i];
+                    }
                 } else {
                     // For fp16 data, direct copy is fine
                     kv_cache[tgt_idx + i] = kv_nope[ori_idx + i];
@@ -352,7 +382,13 @@ __global__ void prefill_absorb_cache_kernel_cc70(
             for (int i = 0; i < VecSize; ++i) {
                 if constexpr (std::is_same_v<T, __nv_bfloat16>) {
                     // For bf16 data, ensure safe conversion when storing
-                    kv_cache[tgt_idx + i] = kv_pe[ori_idx + i];
+                    // Check if cache is fp16 while input is bf16
+                    if constexpr (std::is_same_v<decltype(kv_cache[tgt_idx + i]), half>) {
+                        kv_cache[tgt_idx + i] = safe_bf16_to_fp16(kv_pe[ori_idx + i]);
+                    } else {
+                        // Both are bf16, direct copy is fine
+                        kv_cache[tgt_idx + i] = kv_pe[ori_idx + i];
+                    }
                 } else {
                     // For fp16 data, direct copy is fine
                     kv_cache[tgt_idx + i] = kv_pe[ori_idx + i];
