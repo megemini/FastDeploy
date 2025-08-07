@@ -326,7 +326,7 @@ std::vector<paddle::Tensor> AppendAttentionKernelWrapper(
                 auto fp16_data = fp16_tensor.data<phi::dtype::float16>();
                 
                 // Convert on CPU for safety
-                paddle::Tensor bf16_cpu = bf16_tensor.cpu();
+                paddle::Tensor bf16_cpu = bf16_tensor.copy_to(paddle::CPUPlace(), false);
                 paddle::Tensor fp16_cpu = paddle::empty(bf16_tensor.shape(), paddle::DataType::FLOAT16, paddle::CPUPlace());
                 
                 // Get CPU data pointers
