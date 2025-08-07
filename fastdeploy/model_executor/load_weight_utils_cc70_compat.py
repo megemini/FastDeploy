@@ -111,6 +111,8 @@ def deal_state_dict_cc70_compat(state_dict):
                     logger.info(f"Converting bf16 tensor '{name}' to fp16 for CC70 compatibility")
                     # Convert bf16 to fp16 via fp32 intermediate
                     src = safe_bf16_to_fp16_tensor(src)
+                    # Update the state_dict with the converted tensor
+                    state_dict[name] = src
             
             # Copy to pinned memory
             dst = src._copy_to(device, True)

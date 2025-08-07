@@ -74,6 +74,7 @@ def get_compatible_dtype(dtype: str = "bfloat16") -> str:
         return "bfloat16"
     else:
         logger.info(f"GPU compute capability {compute_capability} does not support bfloat16, falling back to float16")
+        logger.info("NOTE: When using bf16 weights on CC70-79, safe conversion will be applied during loading")
         return "float16"
 
 TaskOption = Literal["generate"]

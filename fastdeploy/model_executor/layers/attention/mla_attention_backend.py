@@ -258,6 +258,25 @@ class MLAAttentionBackend(AttentionBackend):
         Prefill阶段的前向传播
         """
         metadata = self.attention_metadata
+        
+        # For CC70 compatibility, ensure safe conversion from bf16 to fp16
+        compute_capability = get_cuda_compute_capability()
+        if compute_capability >= 70 and compute_capability < 80 and metadata._dtype == paddle.float16:
+            from fastdeploy.model_executor.load_weight_utils_cc70_compat import safe_bf16_to_fp16_tensor
+            
+            # Convert input tensors if they are bf16
+            if qkv.dtype == paddle.bfloat16:
+                qkv = safe_bf16_to_fp16_tensor(qkv)
+            if q is not None and q.dtype == paddle.bfloat16:
+                q = safe_bf16_to_fp16_tensor(q)
+            if k is not None and k.dtype == paddle.bfloat16:
+                k = safe_bf16_to_fp16_tensor(k)
+            if v is not None and v.dtype == paddle.bfloat16:
+                v = safe_bf16_to_fp16_tensor(v)
+            if compressed_kv is not None and compressed_kv.dtype == paddle.bfloat16:
+                compressed_kv = safe_bf16_to_fp16_tensor(compressed_kv)
+            if k_pe is not None and k_pe.dtype == paddle.bfloat16:
+                k_pe = safe_bf16_to_fp16_tensor(k_pe)
 
         if self.pd_disaggregation_mode == "per_query":
             metadata.kv_signal_data_list[layer.layer_id] = init_signal_layerwise(
@@ -312,6 +331,25 @@ class MLAAttentionBackend(AttentionBackend):
         Decode阶段的前向传播
         """
         metadata = self.attention_metadata
+        
+        # For CC70 compatibility, ensure safe conversion from bf16 to fp16
+        compute_capability = get_cuda_compute_capability()
+        if compute_capability >= 70 and compute_capability < 80 and metadata._dtype == paddle.float16:
+            from fastdeploy.model_executor.load_weight_utils_cc70_compat import safe_bf16_to_fp16_tensor
+            
+            # Convert input tensors if they are bf16
+            if qkv.dtype == paddle.bfloat16:
+                qkv = safe_bf16_to_fp16_tensor(qkv)
+            if q is not None and q.dtype == paddle.bfloat16:
+                q = safe_bf16_to_fp16_tensor(q)
+            if k is not None and k.dtype == paddle.bfloat16:
+                k = safe_bf16_to_fp16_tensor(k)
+            if v is not None and v.dtype == paddle.bfloat16:
+                v = safe_bf16_to_fp16_tensor(v)
+            if compressed_kv is not None and compressed_kv.dtype == paddle.bfloat16:
+                compressed_kv = safe_bf16_to_fp16_tensor(compressed_kv)
+            if k_pe is not None and k_pe.dtype == paddle.bfloat16:
+                k_pe = safe_bf16_to_fp16_tensor(k_pe)
 
         if self.pd_disaggregation_mode == "per_query":
             metadata.kv_signal_data_list[layer.layer_id] = init_signal_layerwise(
@@ -407,6 +445,25 @@ class MLAAttentionBackend(AttentionBackend):
         metadata = self.attention_metadata
         speculate_decoder = self.speculative_method is not None
         speculate_max_tokens = self.speculate_max_draft_token_num
+        
+        # For CC70 compatibility, ensure safe conversion from bf16 to fp16
+        compute_capability = get_cuda_compute_capability()
+        if compute_capability >= 70 and compute_capability < 80 and metadata._dtype == paddle.float16:
+            from fastdeploy.model_executor.load_weight_utils_cc70_compat import safe_bf16_to_fp16_tensor
+            
+            # Convert input tensors if they are bf16
+            if qkv.dtype == paddle.bfloat16:
+                qkv = safe_bf16_to_fp16_tensor(qkv)
+            if q is not None and q.dtype == paddle.bfloat16:
+                q = safe_bf16_to_fp16_tensor(q)
+            if k is not None and k.dtype == paddle.bfloat16:
+                k = safe_bf16_to_fp16_tensor(k)
+            if v is not None and v.dtype == paddle.bfloat16:
+                v = safe_bf16_to_fp16_tensor(v)
+            if compressed_kv is not None and compressed_kv.dtype == paddle.bfloat16:
+                compressed_kv = safe_bf16_to_fp16_tensor(compressed_kv)
+            if k_pe is not None and k_pe.dtype == paddle.bfloat16:
+                k_pe = safe_bf16_to_fp16_tensor(k_pe)
 
         if self.pd_disaggregation_mode == "per_query":
             metadata.kv_signal_data_list[layer.layer_id] = init_signal_layerwise(
