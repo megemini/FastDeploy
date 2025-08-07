@@ -311,107 +311,13 @@ std::vector<paddle::Tensor> AppendAttentionKernelWrapper(
                 causal,
                 speculate_decoder);
         } else if (D == paddle::DataType::BFLOAT16) {
-            // For CC70 compatibility, convert BFLOAT16 to FP16 using safe conversion
-            // We need to use the safe conversion function from load_weight_utils_cc70_compat
-            
-            // Import safe conversion function - this is a placeholder, actual implementation
-            // would require including the appropriate header and using the actual function
-            auto safe_bf16_to_fp16_tensor = [](const paddle::Tensor& bf16_tensor) -> paddle::Tensor {
-                // Simple implementation - in practice this would call the actual safe conversion function
-                // This is a workaround for now
-                auto bf16_data = bf16_tensor.data<phi::dtype::bfloat16>();
-                auto numel = bf16_tensor.numel();
-                
-                // Create FP16 tensor
-                auto fp16_tensor = paddle::empty(bf16_tensor.shape(), paddle::DataType::FLOAT16, bf16_tensor.place());
-                auto fp16_data = fp16_tensor.data<phi::dtype::float16>();
-                
-                // Convert on CPU for safety
-                paddle::Tensor bf16_cpu = bf16_tensor.copy_to(paddle::CPUPlace(), false);
-                paddle::Tensor fp16_cpu = paddle::empty(bf16_tensor.shape(), paddle::DataType::FLOAT16, paddle::CPUPlace());
-                
-                // Get CPU data pointers
-                auto bf16_cpu_data = bf16_cpu.data<phi::dtype::bfloat16>();
-                auto fp16_cpu_data = fp16_cpu.data<phi::dtype::float16>();
-                
-                // Safe conversion: bf16 -> float32 -> fp16
-                for (int i = 0; i < numel; i++) {
-                    float val = static_cast<float>(bf16_cpu_data[i]);
-                    
-                    // Check if the value is within fp16 range
-                    // fp16 range: [-65504.0, 65504.0]
-                    if (val > 65504.0f) {
-                        // For values slightly above fp16 max, try to preserve some precision
-                        // by scaling down proportionally
-                        if (val < 131008.0f) {  // 2 * 65504
-                            // Scale down by factor of 2
-                            val = val * 0.5f;
-                        } else {
-                            // For very large values, clamp to max fp16
-                            val = 65504.0f;
-                        }
-                    } else if (val < -65504.0f) {
-                        // For values slightly below fp16 min, try to preserve some precision
-                        // by scaling down proportionally
-                        if (val > -131008.0f) {  // -2 * 65504
-                            // Scale down by factor of 2
-                            val = val * 0.5f;
-                        } else {
-                            // For very small values, clamp to min fp16
-                            val = -65504.0f;
-                        }
-                    } else if (val != val) {    // Check for NaN
-                        val = 0.0f;       // Convert NaN to 0
-                    } else if (val == std::numeric_limits<float>::infinity()) {  // Check for +inf
-                        val = 65504.0f;   // Convert +inf to max fp16
-                    } else if (val == -std::numeric_limits<float>::infinity()) {  // Check for -inf
-                        val = -65504.0f;  // Convert -inf to min fp16
-                    } else if (std::abs(val) < 5.96e-8f) {  // Check for denormals (below fp16 min positive)
-                        // For very small values that would be denormal in fp16,
-                        // we can either flush to zero or scale up
-                        val = 0.0f;  // Flush to zero for simplicity
-                    }
-                    
-                    // Convert the processed value to fp16
-                    fp16_cpu_data[i] = static_cast<phi::dtype::float16>(val);
-                }
-                
-                // Copy back to device
-                return fp16_cpu.copy_to(bf16_tensor.place(), true);
-            };
-            
-            // Convert input tensors to FP16 using safe conversion
-            paddle::Tensor qkv_fp16 = safe_bf16_to_fp16_tensor(qkv);
-            paddle::Tensor key_cache_fp16 = safe_bf16_to_fp16_tensor(key_cache);
-            paddle::Tensor value_cache_fp16 = safe_bf16_to_fp16_tensor(value_cache);
-            
-            // Convert optional tensors if they exist
-            paddle::optional<paddle::Tensor> rotary_embs_fp16;
-            if (rotary_embs) {
-                rotary_embs_fp16 = safe_bf16_to_fp16_tensor(*rotary_embs);
-            }
-            
-            paddle::optional<paddle::Tensor> attn_mask_fp16;
-            if (attn_mask) {
-                attn_mask_fp16 = safe_bf16_to_fp16_tensor(*attn_mask);
-            }
-            
-            paddle::optional<paddle::Tensor> qkv_bias_fp16;
-            if (qkv_bias) {
-                qkv_bias_fp16 = safe_bf16_to_fp16_tensor(*qkv_bias);
-            }
-            
-            paddle::optional<paddle::Tensor> qkv_out_scales_fp16;
-            if (qkv_out_scales) {
-                qkv_out_scales_fp16 = safe_bf16_to_fp16_tensor(*qkv_out_scales);
-            }
-            
-            // Call the FP16 implementation
-            auto result = append_attention_cc70_compat::AppendAttentionKernelCC70<half>(
+            // For CC70 compatibility, use the CC70 compatibility kernel directly
+            // which handles safe conversion internally
+            auto result = append_attention_cc70_compat::AppendAttentionKernelCC70<__nv_bfloat16>(
                 meta_data,
-                qkv_fp16,
-                key_cache_fp16,
-                value_cache_fp16,
+                qkv,
+                key_cache,
+                value_cache,
                 seq_lens_encoder,
                 seq_lens_decoder,
                 seq_lens_this_time,
@@ -429,10 +335,10 @@ std::vector<paddle::Tensor> AppendAttentionKernelWrapper(
                 decoder_num_blocks,
                 set_max_lengths,
                 max_len_kv,
-                rotary_embs_fp16,
-                attn_mask_fp16,
-                qkv_bias_fp16,
-                qkv_out_scales_fp16,
+                rotary_embs,
+                attn_mask,
+                qkv_bias,
+                qkv_out_scales,
                 cache_k_quant_scales,
                 cache_v_quant_scales,
                 cache_k_dequant_scales,
@@ -595,192 +501,12 @@ std::vector<paddle::Tensor> AppendAttention(
     phi::dtype::float16 fp16_dtype;
     phi::dtype::bfloat16 bp16_dtype;
     
-    switch (qkv.dtype()) {
-        case paddle::DataType::FLOAT16: return dispatch_by_template(fp16_dtype);
-        case paddle::DataType::BFLOAT16: return dispatch_by_template(bp16_dtype);
-        case paddle::DataType::INT32: {
-            if (compute_dtype == "bf16") {
-                return dispatch_by_template(bp16_dtype);
-            } else if (compute_dtype == "fp16") {
-                return dispatch_by_template(fp16_dtype);
-            } else {
-                PD_THROW("Only supported attr of compute_dtype in ['fp16', 'bf16'].");
-                break;
-            }
-        }
-        default: {
-            PD_THROW(
-                "NOT supported data type. "
-                "Only float16 and bfloat16 are supported. ");
-            break;
-        }
-    }
-    return {paddle::Tensor{}};
-}
-
-// Forward declaration for the original GQARopeWriteCacheKernel
-std::vector<paddle::Tensor> GQARopeWriteCacheKernel(
-    const paddle::Tensor& qkv,
-    const paddle::Tensor& key_cache,
-    const paddle::Tensor& value_cache,
-    const paddle::Tensor& cu_seqlens_q,
-    const paddle::Tensor& cu_seqlens_k,
-    const paddle::Tensor& rotary_embs,
-    const paddle::Tensor& seq_lens_this_time,
-    const paddle::Tensor& seq_lens_encoder,
-    const paddle::Tensor& seq_lens_decoder,
-    const paddle::Tensor& batch_id_per_token,
-    const paddle::Tensor& block_tables,
-    const paddle::Tensor& kv_batch_ids,
-    const paddle::Tensor& kv_tile_ids,
-    const paddle::Tensor& kv_num_blocks,
-    const paddle::Tensor& cache_batch_ids,
-    const paddle::Tensor& cache_tile_ids,
-    const paddle::Tensor& cache_num_blocks,
-    const paddle::optional<paddle::Tensor>& cache_k_quant_scales,
-    const paddle::optional<paddle::Tensor>& cache_v_quant_scales,
-    const paddle::optional<paddle::Tensor>& cache_k_dequant_scales,
-    const paddle::optional<paddle::Tensor>& cache_v_dequant_scales,
-    const paddle::optional<paddle::Tensor>& cache_k_zp,
-    const paddle::optional<paddle::Tensor>& cache_v_zp,
-    const paddle::optional<paddle::Tensor>& kv_signal_data,
-    const int kv_token_num,
-    const int max_seq_len,
-    const std::string& cache_quant_type);
-
-// Forward declaration for cc70 compatibility implementation
-std::vector<paddle::Tensor> GQARopeWriteCacheKernelCC70(
-    const paddle::Tensor& qkv,
-    const paddle::Tensor& key_cache,
-    const paddle::Tensor& value_cache,
-    const paddle::Tensor& cu_seqlens_q,
-    const paddle::Tensor& cu_seqlens_k,
-    const paddle::Tensor& rotary_embs,
-    const paddle::Tensor& seq_lens_this_time,
-    const paddle::Tensor& seq_lens_encoder,
-    const paddle::Tensor& seq_lens_decoder,
-    const paddle::Tensor& batch_id_per_token,
-    const paddle::Tensor& block_tables,
-    const paddle::Tensor& kv_batch_ids,
-    const paddle::Tensor& kv_tile_ids,
-    const paddle::Tensor& kv_num_blocks,
-    const paddle::Tensor& cache_batch_ids,
-    const paddle::Tensor& cache_tile_ids,
-    const paddle::Tensor& cache_num_blocks,
-    const paddle::optional<paddle::Tensor>& cache_k_quant_scales,
-    const paddle::optional<paddle::Tensor>& cache_v_quant_scales,
-    const paddle::optional<paddle::Tensor>& cache_k_dequant_scales,
-    const paddle::optional<paddle::Tensor>& cache_v_dequant_scales,
-    const paddle::optional<paddle::Tensor>& cache_k_zp,
-    const paddle::optional<paddle::Tensor>& cache_v_zp,
-    const paddle::optional<paddle::Tensor>& kv_signal_data,
-    const int kv_token_num,
-    const int max_seq_len,
-    const std::string& cache_quant_type);
-
-// Wrapper function that dispatches to the appropriate implementation based on compute capability
-std::vector<paddle::Tensor> GQARopeWriteCacheKernelWrapper(
-    const paddle::Tensor& qkv,
-    const paddle::Tensor& key_cache,
-    const paddle::Tensor& value_cache,
-    const paddle::Tensor& cu_seqlens_q,
-    const paddle::Tensor& cu_seqlens_k,
-    const paddle::Tensor& rotary_embs,
-    const paddle::Tensor& seq_lens_this_time,
-    const paddle::Tensor& seq_lens_encoder,
-    const paddle::Tensor& seq_lens_decoder,
-    const paddle::Tensor& batch_id_per_token,
-    const paddle::Tensor& block_tables,
-    const paddle::Tensor& kv_batch_ids,
-    const paddle::Tensor& kv_tile_ids,
-    const paddle::Tensor& kv_num_blocks,
-    const paddle::Tensor& cache_batch_ids,
-    const paddle::Tensor& cache_tile_ids,
-    const paddle::Tensor& cache_num_blocks,
-    const paddle::optional<paddle::Tensor>& cache_k_quant_scales,
-    const paddle::optional<paddle::Tensor>& cache_v_quant_scales,
-    const paddle::optional<paddle::Tensor>& cache_k_dequant_scales,
-    const paddle::optional<paddle::Tensor>& cache_v_dequant_scales,
-    const paddle::optional<paddle::Tensor>& cache_k_zp,
-    const paddle::optional<paddle::Tensor>& cache_v_zp,
-    const paddle::optional<paddle::Tensor>& kv_signal_data,
-    const int kv_token_num,
-    const int max_seq_len,
-    const std::string& cache_quant_type) {
-    
-    // Get compute capability
-    int device_id;
-    cudaGetDevice(&device_id);
-    int compute_capability;
-    cudaDeviceGetAttribute(&compute_capability, cudaDevAttrComputeCapabilityMajor, device_id);
-    compute_capability = compute_capability * 10;
-    int minor;
-    cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, device_id);
-    compute_capability += minor;
-    
-    // Dispatch to appropriate implementation based on compute capability
-    if (compute_capability >= 80) {
-        // Use the original implementation for cc >= 80
-        return GQARopeWriteCacheKernel(
-            qkv,
-            key_cache,
-            value_cache,
-            cu_seqlens_q,
-            cu_seqlens_k,
-            rotary_embs,
-            seq_lens_this_time,
-            seq_lens_encoder,
-            seq_lens_decoder,
-            batch_id_per_token,
-            block_tables,
-            kv_batch_ids,
-            kv_tile_ids,
-            kv_num_blocks,
-            cache_batch_ids,
-            cache_tile_ids,
-            cache_num_blocks,
-            cache_k_quant_scales,
-            cache_v_quant_scales,
-            cache_k_dequant_scales,
-            cache_v_dequant_scales,
-            cache_k_zp,
-            cache_v_zp,
-            kv_signal_data,
-            kv_token_num,
-            max_seq_len,
-            cache_quant_type);
-    } else if (compute_capability >= 70 && compute_capability < 80) {
-        // Use the cc70 compatibility implementation for 70 <= cc < 80
-        return GQARopeWriteCacheKernelCC70(
-            qkv,
-            key_cache,
-            value_cache,
-            cu_seqlens_q,
-            cu_seqlens_k,
-            rotary_embs,
-            seq_lens_this_time,
-            seq_lens_encoder,
-            seq_lens_decoder,
-            batch_id_per_token,
-            block_tables,
-            kv_batch_ids,
-            kv_tile_ids,
-            kv_num_blocks,
-            cache_batch_ids,
-            cache_tile_ids,
-            cache_num_blocks,
-            cache_k_quant_scales,
-            cache_v_quant_scales,
-            cache_k_dequant_scales,
-            cache_v_dequant_scales,
-            cache_k_zp,
-            cache_v_zp,
-            kv_signal_data,
-            kv_token_num,
-            max_seq_len,
-            cache_quant_type);
+    if (compute_dtype == "fp16") {
+        return dispatch_by_template(fp16_dtype);
+    } else if (compute_dtype == "bf16") {
+        return dispatch_by_template(bp16_dtype);
     } else {
-        PD_THROW("GQARopeWriteCacheKernel requires compute capability >= 70");
-        return {paddle::Tensor{}, paddle::Tensor{}, paddle::Tensor{}};
+        PD_THROW("Only supported attr of compute_dtype in ['fp16', 'bf16'].");
+        return {paddle::Tensor{}, paddle::Tensor{}};
     }
 }
