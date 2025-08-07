@@ -25,6 +25,7 @@ from typing import Optional, Tuple, List, Any
 from .fused_moe_backend_base import MoEMethodBase
 from .fused_moe_cutlass_backend import CutlassMoEMethod
 from fastdeploy.platforms import current_platform
+from fastdeploy.model_executor.load_weight_utils_cc70_compat import safe_bf16_to_fp16_tensor
 
 
 class CC70CompatMoEMethod(MoEMethodBase):
@@ -142,11 +143,11 @@ class CC70CompatMoEMethod(MoEMethodBase):
                 layer, x, router_logits, top_k, renormalize,
                 use_grouped_topk, topk_group, num_expert_group)
         
-        # Convert BF16 to FP16 if needed
+        # Convert BF16 to FP16 if needed using safe conversion
         if x.dtype == paddle.bfloat16:
-            x = x.cast(paddle.float16)
+            x = safe_bf16_to_fp16_tensor(x)
         if router_logits.dtype == paddle.bfloat16:
-            router_logits = router_logits.cast(paddle.float16)
+            router_logits = safe_bf16_to_fp16_tensor(router_logits)
         
         # Use simplified MOE implementation for cc70
         return self._apply_cc70_moe(layer, x, router_logits, top_k, renormalize)

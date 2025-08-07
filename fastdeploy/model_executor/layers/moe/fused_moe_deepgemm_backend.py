@@ -23,6 +23,7 @@ from fastdeploy.distributed.communication import tensor_model_parallel_all_reduc
 from fastdeploy.model_executor.layers.utils import get_tensor
 from fastdeploy.model_executor.ops.gpu import count_tokens_per_expert_func, deep_gemm
 from fastdeploy.config import get_compatible_dtype
+from fastdeploy.model_executor.load_weight_utils_cc70_compat import safe_bf16_to_fp16_tensor
 
 from ..utils import create_and_set_parameter
 from .fused_moe_backend_base import MoEMethodBase
@@ -227,7 +228,11 @@ class DeepGemmFusedMoeMethod(MoEMethodBase):
             )[0]
 
         else:
-            tmp_ffn_out = paddle.cast(recv_x[0], paddle.bfloat16 if compatible_dtype == "bfloat16" else paddle.float16)
+            # Use safe conversion for BF16 to FP16
+            if compatible_dtype == "bfloat16":
+                tmp_ffn_out = recv_x[0]  # Keep as BF16 if compatible
+            else:
+                tmp_ffn_out = safe_bf16_to_fp16_tensor(recv_x[0]) if recv_x[0].dtype == paddle.bfloat16 else recv_x[0].astype(paddle.float16)
 
         # 5. EP combine
         return self.ep_prefill_runner.combine(tmp_ffn_out, handle, recv_topk_weights)
