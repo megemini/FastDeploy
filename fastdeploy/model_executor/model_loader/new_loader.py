@@ -27,6 +27,7 @@ from fastdeploy.model_executor.load_weight_utils import (
 )
 from fastdeploy.model_executor.load_weight_utils_cc70_compat import (
     safe_bf16_to_fp16_tensor,
+    ensure_safe_bf16_conversion,
 )
 from fastdeploy.config import get_cuda_compute_capability
 from fastdeploy.model_executor.model_loader.base_loader import BaseModelLoader
@@ -59,11 +60,16 @@ class NewModelLoader(BaseModelLoader):
             logger.info(f"Using CC70 compatible weight loading for compute capability {compute_capability}")
             # Create a wrapper iterator that handles bf16 to fp16 conversion
             def cc70_compat_weights_iterator(safetensor_files):
+                state_dict = {}
+                # First collect all weights
                 for name, weight in safetensors_weights_iterator(safetensor_files):
-                    # Convert numpy array to tensor for processing
-                    if isinstance(weight, np.ndarray) and weight.dtype == np.dtype('bfloat16'):
-                        logger.info(f"Converting bf16 weight '{name}' to fp16 for CC70 compatibility")
-                        weight = safe_bf16_to_fp16_tensor(weight)
+                    state_dict[name] = weight
+                
+                # Apply comprehensive BF16 to FP16 conversion
+                ensure_safe_bf16_conversion(state_dict, compute_capability)
+                
+                # Yield the converted weights
+                for name, weight in state_dict.items():
                     yield name, weight
             
             weights_iterator = cc70_compat_weights_iterator(safetensor_files)
