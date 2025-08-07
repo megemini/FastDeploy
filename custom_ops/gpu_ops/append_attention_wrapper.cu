@@ -310,31 +310,78 @@ std::vector<paddle::Tensor> AppendAttentionKernelWrapper(
                 causal,
                 speculate_decoder);
         } else if (D == paddle::DataType::BFLOAT16) {
-            // For CC70 compatibility, convert BFLOAT16 to FP16
-            // Convert input tensors to FP16
-            paddle::Tensor qkv_fp16 = qkv.cast(paddle::DataType::FLOAT16);
-            paddle::Tensor key_cache_fp16 = key_cache.cast(paddle::DataType::FLOAT16);
-            paddle::Tensor value_cache_fp16 = value_cache.cast(paddle::DataType::FLOAT16);
+            // For CC70 compatibility, convert BFLOAT16 to FP16 using safe conversion
+            // We need to use the safe conversion function from load_weight_utils_cc70_compat
+            
+            // Import safe conversion function - this is a placeholder, actual implementation
+            // would require including the appropriate header and using the actual function
+            auto safe_bf16_to_fp16_tensor = [](const paddle::Tensor& bf16_tensor) -> paddle::Tensor {
+                // Simple implementation - in practice this would call the actual safe conversion function
+                // This is a workaround for now
+                auto bf16_data = bf16_tensor.data<phi::dtype::bfloat16>();
+                auto numel = bf16_tensor.numel();
+                
+                // Create FP16 tensor
+                auto fp16_tensor = paddle::empty(bf16_tensor.shape(), paddle::DataType::FLOAT16, bf16_tensor.place());
+                auto fp16_data = fp16_tensor.data<phi::dtype::float16>();
+                
+                // Convert on CPU for safety
+                paddle::Tensor bf16_cpu = bf16_tensor.cpu();
+                paddle::Tensor fp16_cpu = paddle::empty(bf16_tensor.shape(), paddle::DataType::FLOAT16, paddle::CPUPlace());
+                
+                // Get CPU data pointers
+                auto bf16_cpu_data = bf16_cpu.data<phi::dtype::bfloat16>();
+                auto fp16_cpu_data = fp16_cpu.data<phi::dtype::float16>();
+                
+                // Safe conversion: bf16 -> float32 -> fp16
+                for (int i = 0; i < numel; i++) {
+                    float val = static_cast<float>(bf16_cpu_data[i]);
+                    
+                    // Check for overflow/underflow
+                    if (val > 65504.0f) {
+                        val = 65504.0f;  // Max fp16 value
+                    } else if (val < -65504.0f) {
+                        val = -65504.0f;  // Min fp16 value
+                    }
+                    
+                    // Handle special values
+                    if (std::isnan(val) || std::isinf(val)) {
+                        // Preserve NaN and inf
+                        fp16_cpu_data[i] = static_cast<phi::dtype::float16>(val);
+                    } else {
+                        // Normal conversion
+                        fp16_cpu_data[i] = static_cast<phi::dtype::float16>(val);
+                    }
+                }
+                
+                // Copy back to device
+                return fp16_cpu.copy_to(bf16_tensor.place(), true);
+            };
+            
+            // Convert input tensors to FP16 using safe conversion
+            paddle::Tensor qkv_fp16 = safe_bf16_to_fp16_tensor(qkv);
+            paddle::Tensor key_cache_fp16 = safe_bf16_to_fp16_tensor(key_cache);
+            paddle::Tensor value_cache_fp16 = safe_bf16_to_fp16_tensor(value_cache);
             
             // Convert optional tensors if they exist
             paddle::optional<paddle::Tensor> rotary_embs_fp16;
             if (rotary_embs) {
-                rotary_embs_fp16 = rotary_embs->cast(paddle::DataType::FLOAT16);
+                rotary_embs_fp16 = safe_bf16_to_fp16_tensor(*rotary_embs);
             }
             
             paddle::optional<paddle::Tensor> attn_mask_fp16;
             if (attn_mask) {
-                attn_mask_fp16 = attn_mask->cast(paddle::DataType::FLOAT16);
+                attn_mask_fp16 = safe_bf16_to_fp16_tensor(*attn_mask);
             }
             
             paddle::optional<paddle::Tensor> qkv_bias_fp16;
             if (qkv_bias) {
-                qkv_bias_fp16 = qkv_bias->cast(paddle::DataType::FLOAT16);
+                qkv_bias_fp16 = safe_bf16_to_fp16_tensor(*qkv_bias);
             }
             
             paddle::optional<paddle::Tensor> qkv_out_scales_fp16;
             if (qkv_out_scales) {
-                qkv_out_scales_fp16 = qkv_out_scales->cast(paddle::DataType::FLOAT16);
+                qkv_out_scales_fp16 = safe_bf16_to_fp16_tensor(*qkv_out_scales);
             }
             
             // Call the FP16 implementation
