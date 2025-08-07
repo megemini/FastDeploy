@@ -17,6 +17,7 @@
 #include "helper.h"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include <limits>
 
 // Template definition for type2value
 template <typename T>
@@ -254,7 +255,7 @@ std::vector<paddle::Tensor> AppendAttentionKernelWrapper(
             speculate_max_draft_token_num,
             causal,
             speculate_decoder);
-    } else if (compute_capability >= 70) {
+    } else if (compute_capability >= 70 && compute_capability < 80) {
         // Use the cc70 compatibility implementation for 70 <= cc < 80
         typedef typename PDTraits<D>::DataType DataType_;
         typedef typename PDTraits<D>::data_t data_t;
@@ -337,21 +338,42 @@ std::vector<paddle::Tensor> AppendAttentionKernelWrapper(
                 for (int i = 0; i < numel; i++) {
                     float val = static_cast<float>(bf16_cpu_data[i]);
                     
-                    // Check for overflow/underflow
+                    // Check if the value is within fp16 range
+                    // fp16 range: [-65504.0, 65504.0]
                     if (val > 65504.0f) {
-                        val = 65504.0f;  // Max fp16 value
+                        // For values slightly above fp16 max, try to preserve some precision
+                        // by scaling down proportionally
+                        if (val < 131008.0f) {  // 2 * 65504
+                            // Scale down by factor of 2
+                            val = val * 0.5f;
+                        } else {
+                            // For very large values, clamp to max fp16
+                            val = 65504.0f;
+                        }
                     } else if (val < -65504.0f) {
-                        val = -65504.0f;  // Min fp16 value
+                        // For values slightly below fp16 min, try to preserve some precision
+                        // by scaling down proportionally
+                        if (val > -131008.0f) {  // -2 * 65504
+                            // Scale down by factor of 2
+                            val = val * 0.5f;
+                        } else {
+                            // For very small values, clamp to min fp16
+                            val = -65504.0f;
+                        }
+                    } else if (val != val) {    // Check for NaN
+                        val = 0.0f;       // Convert NaN to 0
+                    } else if (val == std::numeric_limits<float>::infinity()) {  // Check for +inf
+                        val = 65504.0f;   // Convert +inf to max fp16
+                    } else if (val == -std::numeric_limits<float>::infinity()) {  // Check for -inf
+                        val = -65504.0f;  // Convert -inf to min fp16
+                    } else if (std::abs(val) < 5.96e-8f) {  // Check for denormals (below fp16 min positive)
+                        // For very small values that would be denormal in fp16,
+                        // we can either flush to zero or scale up
+                        val = 0.0f;  // Flush to zero for simplicity
                     }
                     
-                    // Handle special values
-                    if (std::isnan(val) || std::isinf(val)) {
-                        // Preserve NaN and inf
-                        fp16_cpu_data[i] = static_cast<phi::dtype::float16>(val);
-                    } else {
-                        // Normal conversion
-                        fp16_cpu_data[i] = static_cast<phi::dtype::float16>(val);
-                    }
+                    // Convert the processed value to fp16
+                    fp16_cpu_data[i] = static_cast<phi::dtype::float16>(val);
                 }
                 
                 // Copy back to device
@@ -727,7 +749,7 @@ std::vector<paddle::Tensor> GQARopeWriteCacheKernelWrapper(
             kv_token_num,
             max_seq_len,
             cache_quant_type);
-    } else if (compute_capability >= 70) {
+    } else if (compute_capability >= 70 && compute_capability < 80) {
         // Use the cc70 compatibility implementation for 70 <= cc < 80
         return GQARopeWriteCacheKernelCC70(
             qkv,
