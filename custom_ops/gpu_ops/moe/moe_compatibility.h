@@ -111,10 +111,50 @@
 // Compatibility function declarations
 namespace moe_compatibility {
 
-// Convert BF16 to FP16 for compatibility
+// Convert BF16 to FP16 for compatibility with improved safety
 __device__ __forceinline__ __half bf16_to_fp16_compat(const moe_bfloat16_t& bf16_val) {
 #if MOE_HAS_BF16_SUPPORT
-  return MOE_BF16_TO_FP16(bf16_val);
+  // First convert to float32 to preserve full range
+  float f32_val = __bfloat162float(bf16_val);
+  
+  // fp16 range constants
+  const float fp16_max = 65504.0f;
+  const float fp16_min = -65504.0f;
+  const float fp16_min_normal = 6.103515625e-05f;  // Minimum normal fp16 value
+  
+  // Handle special values first
+  if (f32_val != f32_val) {    // Check for NaN
+      return __float2half(0.0f);       // Convert NaN to 0
+  } else if (f32_val == __int_as_float(0x7F800000)) {  // Check for +inf
+      return __float2half(fp16_max);   // Convert +inf to max fp16
+  } else if (f32_val == __int_as_float(0xFF800000)) {  // Check for -inf
+      return __float2half(fp16_min);   // Convert -inf to min fp16
+  }
+  
+  // Check if the value is within fp16 range
+  if (f32_val > fp16_max) {
+      // Use tanh-based compression for better preservation of relative magnitudes
+      float excess = f32_val - fp16_max;
+      float normalized_excess = excess / fp16_max;  // Normalize relative to fp16_max
+      float compressed = tanhf(normalized_excess);  // Map to [0, 1) range
+      
+      // Use 10% of fp16 range for compressed values
+      f32_val = fp16_max * 0.9f + compressed * fp16_max * 0.1f;
+  } else if (f32_val < fp16_min) {
+      // Similar approach for negative values
+      float excess = fp16_min - f32_val;
+      float normalized_excess = excess / fabsf(fp16_min);
+      float compressed = tanhf(normalized_excess);
+      
+      // Use 10% of negative fp16 range for compressed values
+      f32_val = fp16_min * 0.9f - compressed * fp16_min * 0.1f;
+  } else if (fabsf(f32_val) < fp16_min_normal && f32_val != 0.0f) {
+      // Scale up denormals to minimum fp16 normal while preserving sign
+      f32_val = copysignf(fp16_min_normal * 0.75f, f32_val);
+  }
+  
+  // Convert to fp16
+  return __float2half(f32_val);
 #else
   return bf16_val;  // Already FP16
 #endif

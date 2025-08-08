@@ -47,8 +47,8 @@ __device__ inline half convert_from_float<half>(const float& val) {
     return __float2half(val);
 }
 
-// Safe conversion from bf16 to fp16 with robust overflow handling
-// This function uses a log-based approach to preserve relative magnitudes
+// Safe conversion from bf16 to fp16 with improved robust overflow handling
+// This function uses a tanh-based approach to better preserve relative magnitudes
 __device__ inline half safe_bf16_to_fp16(const __nv_bfloat16& val) {
     // First convert to float32 to preserve full range
     float f32_val = __bfloat162float(val);
@@ -64,43 +64,39 @@ __device__ inline half safe_bf16_to_fp16(const __nv_bfloat16& val) {
     } else if (f32_val == __int_as_float(0x7F800000)) {  // Check for +inf
         return __float2half(fp16_max);   // Convert +inf to max fp16
     } else if (f32_val == __int_as_float(0xFF800000)) {  // Check for -inf
-        return __float2half(fp16_min);  // Convert -inf to min fp16
+        return __float2half(fp16_min);   // Convert -inf to min fp16
     }
     
     // Check if the value is within fp16 range
     if (f32_val > fp16_max) {
-        // Apply log transformation to preserve relative magnitudes
-        float log_val = log1pf(f32_val - fp16_max);
-        // Scale log values to fit in the upper half of fp16 range
-        f32_val = fp16_max + log_val * (fp16_max * 0.5f);
+        // Use tanh-based compression for better preservation of relative magnitudes
+        // This maps any positive value to a compressed range near fp16_max
+        float excess = f32_val - fp16_max;
+        float normalized_excess = excess / fp16_max;  // Normalize relative to fp16_max
+        float compressed = tanhf(normalized_excess);  // Map to [0, 1) range
         
-        // If still too large, apply more aggressive scaling
-        if (f32_val > fp16_max * 1.5f) {
-            log_val = log1pf(f32_val - fp16_max);
-            f32_val = fp16_max + log_val * (fp16_max * 0.25f);
-        }
+        // Use 10% of fp16 range for compressed values
+        f32_val = fp16_max * 0.9f + compressed * fp16_max * 0.1f;
         
-        // Final clamp to ensure within range
+        // Final safety clamp
         f32_val = fminf(f32_val, fp16_max);
     } else if (f32_val < fp16_min) {
-        // Apply log transformation for negative values
-        float log_val = log1pf(-(f32_val - fp16_min));
-        // Scale log values to fit in the lower half of fp16 range
-        f32_val = fp16_min - log_val * (fp16_max * 0.5f);
+        // Similar approach for negative values
+        float excess = fp16_min - f32_val;
+        float normalized_excess = excess / fabsf(fp16_min);
+        float compressed = tanhf(normalized_excess);
         
-        // If still too small, apply more aggressive scaling
-        if (f32_val < fp16_min * 1.5f) {
-            log_val = log1pf(-(f32_val - fp16_min));
-            f32_val = fp16_min - log_val * (fp16_max * 0.25f);
-        }
+        // Use 10% of negative fp16 range for compressed values
+        f32_val = fp16_min * 0.9f - compressed * fp16_min * 0.1f;
         
-        // Final clamp to ensure within range
+        // Final safety clamp
         f32_val = fmaxf(f32_val, fp16_min);
     } else if (fabsf(f32_val) < fp16_min_normal) {
         // Improved denormal handling - scale up to preserve relative magnitudes
         if (f32_val != 0.0f) {
             // Scale up denormals to minimum fp16 normal while preserving sign
-            f32_val = copysignf(fp16_min_normal * 0.5f, f32_val);
+            // Use a slightly larger value to ensure it doesn't get flushed to zero
+            f32_val = copysignf(fp16_min_normal * 0.75f, f32_val);
         }
     }
     
