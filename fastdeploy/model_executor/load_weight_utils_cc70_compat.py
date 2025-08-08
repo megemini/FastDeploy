@@ -75,8 +75,9 @@ def safe_bf16_to_fp16_tensor(tensor):
             # If max value exceeds safe fp16 range, apply global scaling
             if max_abs_value > fp16_safe_max:
                 # Calculate scaling factor with a generous safety margin
-                scale_factor = (fp16_safe_max * 0.9) / max_abs_value
+                scale_factor = (fp16_safe_max * 0.8) / max_abs_value  # Use 0.8 instead of 0.9 for more safety
                 logger.info(f"Scaling entire tensor by factor {scale_factor} to fit within fp16 safe range")
+                logger.info(f"Max absolute value: {max_abs_value}, Safe max: {fp16_safe_max}")
                 
                 # Apply scaling only to finite values
                 fp32_array[valid_mask] = fp32_array[valid_mask] * scale_factor
@@ -89,14 +90,16 @@ def safe_bf16_to_fp16_tensor(tensor):
         # Handle positive overflow with extra-safe boundary handling
         mask_large_pos = (fp32_array > fp16_safe_max) & ~posinf_mask
         if np.any(mask_large_pos):
+            logger.warning(f"Found {np.sum(mask_large_pos)} values still above safe max after scaling, clamping")
             # Map to a value well below fp16_max to avoid overflow
-            fp32_array[mask_large_pos] = fp16_safe_max
+            fp32_array[mask_large_pos] = fp16_safe_max * 0.95  # Use 95% of safe max
         
         # Handle negative overflow with extra-safe boundary handling
         mask_large_neg = (fp32_array < fp16_safe_min) & ~neginf_mask
         if np.any(mask_large_neg):
+            logger.warning(f"Found {np.sum(mask_large_neg)} values still below safe min after scaling, clamping")
             # Map to a value well above fp16_min to avoid overflow
-            fp32_array[mask_large_neg] = fp16_safe_min
+            fp32_array[mask_large_neg] = fp16_safe_min * 0.95  # Use 95% of safe min
         
         # Handle denormal values with improved precision
         # Very small values (below smallest subnormal)
@@ -116,7 +119,7 @@ def safe_bf16_to_fp16_tensor(tensor):
         
         # Final safety clamp to ensure all values are within fp16 range
         # Use extra-safe limits to avoid any potential rounding issues
-        fp32_array = np.clip(fp32_array, fp16_safe_min, fp16_safe_max)
+        fp32_array = np.clip(fp32_array, fp16_safe_min * 0.95, fp16_safe_max * 0.95)
         
         # Convert to fp16 using a two-step process for maximum safety
         # First convert to float16
