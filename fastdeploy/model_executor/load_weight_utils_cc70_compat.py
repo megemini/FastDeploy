@@ -52,8 +52,8 @@ def safe_bf16_to_fp16_tensor(tensor):
         fp16_max = 65504.0
         fp16_min = -65504.0
         # Use a much safer margin to guarantee no overflow
-        fp16_safe_max = 65000.0  # Well below max to avoid any rounding issues
-        fp16_safe_min = -65000.0
+        fp16_safe_max = 60000.0  # Much more conservative safe max
+        fp16_safe_min = -60000.0
         fp16_min_normal = 6.103515625e-05  # Minimum normal fp16 value
         fp16_min_subnormal = 5.960464e-08  # Smallest representable subnormal fp16
         
@@ -72,10 +72,10 @@ def safe_bf16_to_fp16_tensor(tensor):
             # Find the maximum absolute value to determine scaling
             max_abs_value = np.max(abs_values)
             
-            # If max value exceeds safe fp16 range, apply global scaling
-            if max_abs_value > fp16_safe_max:
-                # Calculate scaling factor with a generous safety margin
-                scale_factor = (fp16_safe_max * 0.8) / max_abs_value  # Use 0.8 instead of 0.9 for more safety
+            # Apply scaling in ALL cases for maximum safety, not just when max_abs_value > fp16_safe_max
+            # This ensures we always have a safety margin
+            scale_factor = (fp16_safe_max * 0.7) / max_abs_value if max_abs_value > 0 else 1.0
+            if scale_factor < 1.0:
                 logger.info(f"Scaling entire tensor by factor {scale_factor} to fit within fp16 safe range")
                 logger.info(f"Max absolute value: {max_abs_value}, Safe max: {fp16_safe_max}")
                 
