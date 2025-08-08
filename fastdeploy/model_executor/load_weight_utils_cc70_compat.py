@@ -37,10 +37,8 @@ def safe_bf16_to_fp16_tensor(tensor):
         
     # Convert to numpy array for processing
     if isinstance(tensor, paddle.Tensor):
-        original_place = tensor.place
         np_array = tensor.numpy()
     else:
-        original_place = None
         np_array = np.array(tensor)
     
     # Check if the tensor is bf16
@@ -58,7 +56,6 @@ def safe_bf16_to_fp16_tensor(tensor):
         overflow_count = np.sum(np.abs(fp32_array) > fp16_max)
         if overflow_count > 0:
             logger.warning(f"Found {overflow_count} values that exceed fp16 range, applying safe conversion")
-            logger.info("Applying overflow protection: scaling large values and clamping extremes")
             
             # For values slightly above fp16 max, try to preserve some precision
             # by scaling down proportionally
@@ -84,58 +81,14 @@ def safe_bf16_to_fp16_tensor(tensor):
         # Convert to fp16
         fp16_array = fp32_array.astype(np.float16)
         
-        logger.info("BF16->FP16 conversion completed successfully with overflow protection")
-        
         # Convert back to paddle tensor
-        return paddle.to_tensor(fp16_array, place=original_place)
+        return paddle.to_tensor(fp16_array, place=tensor.place if isinstance(tensor, paddle.Tensor) else None)
     else:
         # If not bf16, just convert to fp16 directly
         if isinstance(tensor, paddle.Tensor):
             return tensor.astype(paddle.float16)
         else:
             return paddle.to_tensor(np_array.astype(np.float16))
-
-
-def ensure_safe_bf16_conversion(state_dict, compute_capability=None):
-    """
-    Ensure all bf16 tensors in state_dict are safely converted to fp16 for CC70-79 compatibility.
-    This function provides comprehensive coverage for all model loading paths.
-    
-    Args:
-        state_dict: Model state dictionary
-        compute_capability: CUDA compute capability (optional, will be detected if not provided)
-        
-    Returns:
-        Updated state_dict with safely converted tensors
-    """
-    if compute_capability is None:
-        compute_capability = get_cuda_compute_capability()
-    
-    # Only apply conversion for CC70-79
-    if not (compute_capability >= 70 and compute_capability < 80):
-        logger.info(f"Compute capability {compute_capability} does not require BF16->FP16 conversion")
-        return state_dict
-    
-    logger.info(f"Applying safe BF16->FP16 conversion for compute capability {compute_capability}")
-    
-    conversion_count = 0
-    for name, tensor in state_dict.items():
-        if isinstance(tensor, paddle.Tensor) and tensor.dtype == paddle.bfloat16:
-            logger.info(f"Safely converting bf16 tensor '{name}' to fp16")
-            state_dict[name] = safe_bf16_to_fp16_tensor(tensor)
-            conversion_count += 1
-        elif isinstance(tensor, np.ndarray) and tensor.dtype == np.dtype('bfloat16'):
-            logger.info(f"Safely converting bf16 numpy array '{name}' to fp16")
-            state_dict[name] = safe_bf16_to_fp16_tensor(tensor)
-            conversion_count += 1
-    
-    if conversion_count > 0:
-        logger.info(f"Successfully converted {conversion_count} bf16 tensors to fp16 using safe conversion")
-        logger.info("BF16->FP16 conversion completed safely using FP32 intermediate format to prevent overflow")
-    else:
-        logger.info("No bf16 tensors found in state_dict")
-    
-    return state_dict
 
 
 def deal_state_dict_cc70_compat(state_dict):
@@ -150,11 +103,17 @@ def deal_state_dict_cc70_compat(state_dict):
     
     logger.info(f"Processing state_dict with CC70 compatibility (compute capability: {compute_capability})")
     
-    # Apply comprehensive BF16 to FP16 conversion first
-    ensure_safe_bf16_conversion(state_dict, compute_capability)
-    
     for name, src in state_dict.items():
         if src._is_initialized() and not isinstance(src.place, paddle.CUDAPinnedPlace):
+            # For CC70-79, we need to handle bf16 to fp16 conversion
+            if compute_capability >= 70 and compute_capability < 80:
+                if src.dtype == paddle.bfloat16:
+                    logger.info(f"Converting bf16 tensor '{name}' to fp16 for CC70 compatibility")
+                    # Convert bf16 to fp16 via fp32 intermediate
+                    src = safe_bf16_to_fp16_tensor(src)
+                    # Update the state_dict with the converted tensor
+                    state_dict[name] = src
+            
             # Copy to pinned memory
             dst = src._copy_to(device, True)
             dst_tensor = dst.value().get_tensor()
@@ -237,8 +196,19 @@ def load_composite_checkpoint_cc70_compat(
     if not state_dict:
         raise ValueError("weight not found in state_dict !")
     
-    # Apply comprehensive CC70 compatibility processing for bf16 weights
-    ensure_safe_bf16_conversion(state_dict, compute_capability)
+    # Additional CC70 compatibility processing for bf16 weights
+    if compute_capability >= 70 and compute_capability < 80:
+        logger.info("Applying CC70 compatibility post-processing to weights")
+        compatible_dtype = get_compatible_dtype("bfloat16")
+        
+        if compatible_dtype == "float16":
+            for name, tensor in state_dict.items():
+                if isinstance(tensor, paddle.Tensor) and tensor.dtype == paddle.bfloat16:
+                    logger.info(f"Post-converting bf16 tensor '{name}' to fp16")
+                    state_dict[name] = safe_bf16_to_fp16_tensor(tensor)
+                elif isinstance(tensor, np.ndarray) and tensor.dtype == np.dtype('bfloat16'):
+                    logger.info(f"Post-converting bf16 numpy array '{name}' to fp16")
+                    state_dict[name] = safe_bf16_to_fp16_tensor(tensor)
     
     return state_dict
 
