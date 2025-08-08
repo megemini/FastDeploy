@@ -311,9 +311,35 @@ std::vector<paddle::Tensor> AppendAttentionKernelWrapper(
                 causal,
                 speculate_decoder);
         } else if (D == paddle::DataType::BFLOAT16) {
-            // For CC70 compatibility, use the CC70 compatibility kernel directly
-            // which handles safe conversion internally
-            auto result = append_attention_cc70_compat::AppendAttentionKernelCC70<__nv_bfloat16>(
+            // For CC70 compatibility, convert BFLOAT16 to FP16
+            // Convert input tensors to FP16
+            paddle::Tensor qkv_fp16 = qkv.cast(paddle::DataType::FLOAT16);
+            paddle::Tensor key_cache_fp16 = key_cache.cast(paddle::DataType::FLOAT16);
+            paddle::Tensor value_cache_fp16 = value_cache.cast(paddle::DataType::FLOAT16);
+            
+            // Convert optional tensors if they exist
+            paddle::optional<paddle::Tensor> rotary_embs_fp16;
+            if (rotary_embs) {
+                rotary_embs_fp16 = rotary_embs->cast(paddle::DataType::FLOAT16);
+            }
+            
+            paddle::optional<paddle::Tensor> attn_mask_fp16;
+            if (attn_mask) {
+                attn_mask_fp16 = attn_mask->cast(paddle::DataType::FLOAT16);
+            }
+            
+            paddle::optional<paddle::Tensor> qkv_bias_fp16;
+            if (qkv_bias) {
+                qkv_bias_fp16 = qkv_bias->cast(paddle::DataType::FLOAT16);
+            }
+            
+            paddle::optional<paddle::Tensor> qkv_out_scales_fp16;
+            if (qkv_out_scales) {
+                qkv_out_scales_fp16 = qkv_out_scales->cast(paddle::DataType::FLOAT16);
+            }
+            
+            // Call the FP16 implementation
+            auto result = append_attention_cc70_compat::AppendAttentionKernelCC70<half>(
                 meta_data,
                 qkv,
                 key_cache,
