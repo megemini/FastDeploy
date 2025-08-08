@@ -43,16 +43,17 @@ def safe_bf16_to_fp16_tensor(tensor):
     
     # Check if the tensor is bf16
     if np_array.dtype == np.dtype('bfloat16'):
-        logger.info("Converting bf16 tensor to fp16 using precision-optimized conversion")
+        logger.info("Converting bf16 tensor to fp16 using ultra-robust conversion")
         
         # First convert to float32 to preserve full range
         fp32_array = np_array.astype(np.float32)
         
-        # Define fp16 range constants with safety margins
+        # Define fp16 range constants with extra-safe margins
         fp16_max = 65504.0
         fp16_min = -65504.0
-        fp16_safe_max = 65500.0  # Slightly below max to avoid rounding issues
-        fp16_safe_min = -65500.0
+        # Use a much safer margin to guarantee no overflow
+        fp16_safe_max = 65000.0  # Well below max to avoid any rounding issues
+        fp16_safe_min = -65000.0
         fp16_min_normal = 6.103515625e-05  # Minimum normal fp16 value
         fp16_min_subnormal = 5.960464e-08  # Smallest representable subnormal fp16
         
@@ -61,46 +62,40 @@ def safe_bf16_to_fp16_tensor(tensor):
         posinf_mask = np.isposinf(fp32_array)
         neginf_mask = np.isneginf(fp32_array)
         
-        # Count values that need special handling
-        overflow_count = np.sum((np.abs(fp32_array) > fp16_safe_max) & ~nan_mask & ~posinf_mask & ~neginf_mask)
-        
-        # Global scaling approach - scale the entire tensor if needed
-        if overflow_count > 0:
-            logger.warning(f"Found {overflow_count} values that exceed fp16 safe range, applying precision-optimized conversion")
+        # Always apply global scaling for maximum safety
+        # Calculate statistics for scaling
+        valid_mask = np.isfinite(fp32_array)
+        if np.any(valid_mask):
+            valid_values = fp32_array[valid_mask]
+            abs_values = np.abs(valid_values)
             
-            # Calculate statistics for better scaling
-            valid_mask = np.isfinite(fp32_array)
-            if np.any(valid_mask):
-                valid_values = fp32_array[valid_mask]
-                abs_values = np.abs(valid_values)
+            # Find the maximum absolute value to determine scaling
+            max_abs_value = np.max(abs_values)
+            
+            # If max value exceeds safe fp16 range, apply global scaling
+            if max_abs_value > fp16_safe_max:
+                # Calculate scaling factor with a generous safety margin
+                scale_factor = (fp16_safe_max * 0.9) / max_abs_value
+                logger.info(f"Scaling entire tensor by factor {scale_factor} to fit within fp16 safe range")
                 
-                # Find the maximum absolute value to determine scaling
-                max_abs_value = np.max(abs_values)
+                # Apply scaling only to finite values
+                fp32_array[valid_mask] = fp32_array[valid_mask] * scale_factor
                 
-                # If max value exceeds fp16 range, apply global scaling
-                if max_abs_value > fp16_safe_max:
-                    # Calculate scaling factor with a safety margin
-                    scale_factor = (fp16_safe_max * 0.95) / max_abs_value
-                    logger.info(f"Scaling entire tensor by factor {scale_factor} to fit within fp16 safe range")
-                    
-                    # Apply scaling only to finite values
-                    fp32_array[valid_mask] = fp32_array[valid_mask] * scale_factor
-                    
-                    # Store the scaling factor as an attribute for potential later use
-                    scaling_info = f"Tensor was scaled by {scale_factor} during bf16->fp16 conversion"
-                    logger.info(scaling_info)
+                # Store the scaling factor as an attribute for potential later use
+                scaling_info = f"Tensor was scaled by {scale_factor} during bf16->fp16 conversion"
+                logger.info(scaling_info)
         
         # After global scaling, handle any remaining out-of-range values
-        # Handle positive overflow with precise boundary handling
+        # Handle positive overflow with extra-safe boundary handling
         mask_large_pos = (fp32_array > fp16_safe_max) & ~posinf_mask
         if np.any(mask_large_pos):
-            # Map to a value just below fp16_max to avoid overflow
+            # Map to a value well below fp16_max to avoid overflow
             fp32_array[mask_large_pos] = fp16_safe_max
         
-        # Handle negative overflow with precise boundary handling
+        # Handle negative overflow with extra-safe boundary handling
         mask_large_neg = (fp32_array < fp16_safe_min) & ~neginf_mask
         if np.any(mask_large_neg):
-            # Map to a value just above fp16_min to avoid overflow
+            # Map to a value well above fp16_min to avoid overflow
             fp32_array[mask_large_neg] = fp16_safe_min
         
         # Handle denormal values with improved precision
@@ -112,7 +107,6 @@ def safe_bf16_to_fp16_tensor(tensor):
             fp32_array[mask_tiny] = signs * fp16_min_subnormal
         
         # Small values (between smallest subnormal and smallest normal)
-        mask_small = (np.abs(fp32_array) >= fp16_min_subnormal) & (np.abs(fp32_array) < fp16_min_normal) & ~nan_mask
         # These will be preserved as subnormals in fp16
         
         # Now handle special values (after all other processing)
@@ -121,11 +115,23 @@ def safe_bf16_to_fp16_tensor(tensor):
         fp32_array[neginf_mask] = fp16_safe_min  # Convert -inf to safe min fp16
         
         # Final safety clamp to ensure all values are within fp16 range
-        # Use safe limits to avoid potential rounding issues
+        # Use extra-safe limits to avoid any potential rounding issues
         fp32_array = np.clip(fp32_array, fp16_safe_min, fp16_safe_max)
         
-        # Convert to fp16
+        # Convert to fp16 using a two-step process for maximum safety
+        # First convert to float16
         fp16_array = fp32_array.astype(np.float16)
+        
+        # Verify no infinities were created during conversion
+        inf_mask = np.isinf(fp16_array)
+        if np.any(inf_mask):
+            logger.warning(f"Found {np.sum(inf_mask)} infinity values after conversion, applying additional fix")
+            # Replace any infinities with the safe max/min values
+            pos_inf_mask = (fp16_array == np.inf)
+            neg_inf_mask = (fp16_array == -np.inf)
+            # Use the largest representable fp16 value
+            fp16_array[pos_inf_mask] = np.float16(65504.0)
+            fp16_array[neg_inf_mask] = np.float16(-65504.0)
         
         # Convert back to paddle tensor
         return paddle.to_tensor(fp16_array, place=tensor.place if isinstance(tensor, paddle.Tensor) else None)

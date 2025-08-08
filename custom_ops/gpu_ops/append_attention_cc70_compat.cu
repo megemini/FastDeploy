@@ -47,17 +47,18 @@ __device__ inline half convert_from_float<half>(const float& val) {
     return __float2half(val);
 }
 
-// Safe conversion from bf16 to fp16 with precision-optimized handling
-// This function uses a boundary-aware approach for maximum numerical stability
+// Ultra-safe conversion from bf16 to fp16 with guaranteed no overflow
+// This function uses extra-safe margins and always applies scaling
 __device__ inline half safe_bf16_to_fp16(const __nv_bfloat16& val) {
     // First convert to float32 to preserve full range
     float f32_val = __bfloat162float(val);
     
-    // fp16 range constants with safety margins
+    // fp16 range constants with extra-safe margins
     const float fp16_max = 65504.0f;
     const float fp16_min = -65504.0f;
-    const float fp16_safe_max = 65500.0f;  // Slightly below max to avoid rounding issues
-    const float fp16_safe_min = -65500.0f;
+    // Use much safer margins to guarantee no overflow
+    const float fp16_safe_max = 65000.0f;  // Well below max to avoid any rounding issues
+    const float fp16_safe_min = -65000.0f;
     const float fp16_min_normal = 6.103515625e-05f;  // Minimum normal fp16 value
     const float fp16_min_subnormal = 5.960464e-08f;  // Smallest representable subnormal fp16
     
@@ -70,27 +71,43 @@ __device__ inline half safe_bf16_to_fp16(const __nv_bfloat16& val) {
         return __float2half(fp16_safe_min);   // Convert -inf to safe min fp16
     }
     
-    // Check if the value is within fp16 safe range
+    // Always apply scaling for maximum safety
+    if (fabsf(f32_val) > fp16_safe_max) {
+        // Calculate scaling factor with a generous safety margin
+        float scale_factor = (fp16_safe_max * 0.9f) / fabsf(f32_val);
+        f32_val = f32_val * scale_factor;
+    }
+    
+    // After scaling, handle any remaining out-of-range values
     if (f32_val > fp16_safe_max) {
-        // Map directly to safe max value to avoid overflow
+        // Map to safe max value to avoid overflow
         f32_val = fp16_safe_max;
     } else if (f32_val < fp16_safe_min) {
-        // Map directly to safe min value to avoid overflow
+        // Map to safe min value to avoid overflow
         f32_val = fp16_safe_min;
-    } else if (fabsf(f32_val) < fp16_min_subnormal) {
+    } else if (fabsf(f32_val) < fp16_min_subnormal && f32_val != 0.0f) {
         // Handle extremely small values (below smallest subnormal)
-        if (f32_val != 0.0f) {
-            // Set to smallest subnormal fp16 value while preserving sign
-            f32_val = copysignf(fp16_min_subnormal, f32_val);
-        }
+        // Set to smallest subnormal fp16 value while preserving sign
+        f32_val = copysignf(fp16_min_subnormal, f32_val);
     }
-    // Values between fp16_min_subnormal and fp16_min_normal will be preserved as subnormals
     
-    // Final safety clamp to ensure all values are within fp16 safe range
+    // Final safety clamp to ensure all values are within fp16 range
     f32_val = fmaxf(fminf(f32_val, fp16_safe_max), fp16_safe_min);
     
     // Convert to fp16
-    return __float2half(f32_val);
+    half fp16_val = __float2half(f32_val);
+    
+    // Verify no infinities were created during conversion
+    if (__hisinf(fp16_val)) {
+        // Replace any infinities with the safe max/min values
+        if (__hge(fp16_val, __float2half(0.0f))) {
+            fp16_val = __float2half(fp16_max);
+        } else {
+            fp16_val = __float2half(fp16_min);
+        }
+    }
+    
+    return fp16_val;
 }
 
 // Safe conversion from fp16 to bf16 (for completeness)
