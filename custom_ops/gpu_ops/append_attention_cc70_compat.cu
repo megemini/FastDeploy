@@ -47,8 +47,8 @@ __device__ inline half convert_from_float<half>(const float& val) {
     return __float2half(val);
 }
 
-// Safe conversion from bf16 to fp16 with improved robust overflow handling
-// This function uses a tanh-based approach to better preserve relative magnitudes
+// Safe conversion from bf16 to fp16 with enhanced robust overflow handling
+// This function uses a sigmoid-based approach for better numerical stability
 __device__ inline half safe_bf16_to_fp16(const __nv_bfloat16& val) {
     // First convert to float32 to preserve full range
     float f32_val = __bfloat162float(val);
@@ -69,34 +69,33 @@ __device__ inline half safe_bf16_to_fp16(const __nv_bfloat16& val) {
     
     // Check if the value is within fp16 range
     if (f32_val > fp16_max) {
-        // Use tanh-based compression for better preservation of relative magnitudes
+        // Use sigmoid-based compression for better numerical stability
         // This maps any positive value to a compressed range near fp16_max
         float excess = f32_val - fp16_max;
-        float normalized_excess = excess / fp16_max;  // Normalize relative to fp16_max
-        float compressed = tanhf(normalized_excess);  // Map to [0, 1) range
+        // Normalize excess values using a more stable formula
+        float normalized_excess = excess / (excess + fp16_max);  // Will be in [0, 1) range
         
-        // Use 10% of fp16 range for compressed values
-        f32_val = fp16_max * 0.9f + compressed * fp16_max * 0.1f;
+        // Map to a compressed range near fp16_max
+        // This ensures values very close to fp16_max stay close
+        f32_val = fp16_max - fp16_min_normal * (1.0f - normalized_excess);
         
         // Final safety clamp
         f32_val = fminf(f32_val, fp16_max);
     } else if (f32_val < fp16_min) {
         // Similar approach for negative values
         float excess = fp16_min - f32_val;
-        float normalized_excess = excess / fabsf(fp16_min);
-        float compressed = tanhf(normalized_excess);
+        float normalized_excess = excess / (excess + fabsf(fp16_min));
         
-        // Use 10% of negative fp16 range for compressed values
-        f32_val = fp16_min * 0.9f - compressed * fp16_min * 0.1f;
+        // Map to a compressed range near fp16_min
+        f32_val = fp16_min + fp16_min_normal * (1.0f - normalized_excess);
         
         // Final safety clamp
         f32_val = fmaxf(f32_val, fp16_min);
     } else if (fabsf(f32_val) < fp16_min_normal) {
-        // Improved denormal handling - scale up to preserve relative magnitudes
+        // Improved denormal handling - preserve sign but use minimum normal value
         if (f32_val != 0.0f) {
-            // Scale up denormals to minimum fp16 normal while preserving sign
-            // Use a slightly larger value to ensure it doesn't get flushed to zero
-            f32_val = copysignf(fp16_min_normal * 0.75f, f32_val);
+            // Set to minimum normal fp16 value while preserving sign
+            f32_val = copysignf(fp16_min_normal, f32_val);
         }
     }
     

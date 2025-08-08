@@ -43,7 +43,7 @@ def safe_bf16_to_fp16_tensor(tensor):
     
     # Check if the tensor is bf16
     if np_array.dtype == np.dtype('bfloat16'):
-        logger.info("Converting bf16 tensor to fp16 using improved robust conversion")
+        logger.info("Converting bf16 tensor to fp16 using enhanced robust conversion")
         
         # First convert to float32 to preserve full range
         fp32_array = np_array.astype(np.float32)
@@ -53,15 +53,17 @@ def safe_bf16_to_fp16_tensor(tensor):
         fp16_min = -65504.0
         fp16_min_normal = 6.103515625e-05  # Minimum normal fp16 value
         
+        # Handle special values first - this must be done before any other processing
+        nan_mask = np.isnan(fp32_array)
+        posinf_mask = np.isposinf(fp32_array)
+        neginf_mask = np.isneginf(fp32_array)
+        
         # Count values that need special handling
-        overflow_count = np.sum(np.abs(fp32_array) > fp16_max)
+        overflow_count = np.sum((np.abs(fp32_array) > fp16_max) & ~nan_mask & ~posinf_mask & ~neginf_mask)
+        
+        # Global scaling approach - scale the entire tensor if needed
         if overflow_count > 0:
-            logger.warning(f"Found {overflow_count} values that exceed fp16 range, applying improved conversion")
-            
-            # Handle special values first
-            fp32_array[np.isnan(fp32_array)] = 0.0
-            fp32_array[np.isposinf(fp32_array)] = fp16_max
-            fp32_array[np.isneginf(fp32_array)] = fp16_min
+            logger.warning(f"Found {overflow_count} values that exceed fp16 range, applying enhanced conversion")
             
             # Calculate statistics for better scaling
             valid_mask = np.isfinite(fp32_array)
@@ -69,63 +71,56 @@ def safe_bf16_to_fp16_tensor(tensor):
                 valid_values = fp32_array[valid_mask]
                 abs_values = np.abs(valid_values)
                 
-                # Find the 99th percentile to avoid outliers affecting the scaling
-                p99_value = np.percentile(abs_values, 99) if len(abs_values) > 100 else np.max(abs_values)
+                # Find the maximum absolute value to determine scaling
+                max_abs_value = np.max(abs_values)
                 
-                # If the 99th percentile is beyond fp16 range, we need to scale
-                if p99_value > fp16_max:
-                    # Calculate scaling factor to fit the 99th percentile within 80% of fp16 range
-                    scale_factor = (fp16_max * 0.8) / p99_value
-                    logger.info(f"Scaling tensor by factor {scale_factor} to fit within fp16 range")
+                # If max value exceeds fp16 range, apply global scaling
+                if max_abs_value > fp16_max:
+                    # Calculate scaling factor with a safety margin
+                    scale_factor = (fp16_max * 0.9) / max_abs_value
+                    logger.info(f"Scaling entire tensor by factor {scale_factor} to fit within fp16 range")
                     
-                    # Apply scaling
-                    fp32_array = fp32_array * scale_factor
+                    # Apply scaling only to finite values
+                    fp32_array[valid_mask] = fp32_array[valid_mask] * scale_factor
                     
                     # Store the scaling factor as an attribute for potential later use
-                    # (This would need to be handled in the model code)
                     scaling_info = f"Tensor was scaled by {scale_factor} during bf16->fp16 conversion"
                     logger.info(scaling_info)
             
-            # For values still outside range, use a more sophisticated approach
-            # that preserves relative magnitudes better than simple clipping
-            
+            # After global scaling, handle any remaining out-of-range values
             # Handle positive overflow
-            mask_large_pos = fp32_array > fp16_max
+            mask_large_pos = (fp32_array > fp16_max) & ~posinf_mask
             if np.any(mask_large_pos):
-                # Map values above max to a compressed range near max
-                # Using tanh-based compression to maintain ordering
+                # Use a sigmoid-based mapping for smoother compression
                 excess = fp32_array[mask_large_pos] - fp16_max
-                # Normalize excess values relative to fp16_max
-                normalized_excess = excess / fp16_max
-                # Apply tanh compression to map any value to [0, 1) range
-                compressed = np.tanh(normalized_excess)
-                # Scale to use 10% of the fp16 range for these values
-                fp32_array[mask_large_pos] = fp16_max * 0.9 + compressed * fp16_max * 0.1
+                # Normalize excess values
+                normalized_excess = excess / (excess + fp16_max)  # Will be in [0, 1) range
+                # Map to a compressed range near fp16_max
+                fp32_array[mask_large_pos] = fp16_max - fp16_min_normal * (1.0 - normalized_excess)
             
             # Handle negative overflow
-            mask_large_neg = fp32_array < fp16_min
+            mask_large_neg = (fp32_array < fp16_min) & ~neginf_mask
             if np.any(mask_large_neg):
                 # Similar approach for negative values
                 excess = fp16_min - fp32_array[mask_large_neg]
-                normalized_excess = excess / abs(fp16_min)
-                compressed = np.tanh(normalized_excess)
-                fp32_array[mask_large_neg] = fp16_min * 0.9 - compressed * fp16_min * 0.1
-            
-            # Final clamp to ensure values are within fp16 range
-            fp32_array = np.clip(fp32_array, fp16_min, fp16_max)
-            
-            # Improved denormal handling - preserve relative magnitudes
-            mask_denorm = (np.abs(fp32_array) < fp16_min_normal) & (fp32_array != 0.0)
-            if np.any(mask_denorm):
-                # For very small values, scale them to smallest representable normal
-                # but preserve their sign and relative magnitude
-                denorm_vals = fp32_array[mask_denorm]
-                # Find the maximum absolute value among denormals
-                max_denorm = np.max(np.abs(denorm_vals))
-                if max_denorm > 0:
-                    # Scale all denormals proportionally to fit between 0 and min_normal
-                    scale_factor = fp16_min_normal * 0.5 / max_denorm
-                    fp32_array[mask_denorm] = denorm_vals * scale_factor
+                normalized_excess = excess / (excess + abs(fp16_min))
+                fp32_array[mask_large_neg] = fp16_min + fp16_min_normal * (1.0 - normalized_excess)
+        
+        # Handle denormal values - values too small for fp16
+        mask_denorm = (np.abs(fp32_array) < fp16_min_normal) & (fp32_array != 0.0) & ~nan_mask
+        if np.any(mask_denorm):
+            # For very small values, preserve their sign but set to smallest normal value
+            # This prevents flush-to-zero behavior
+            signs = np.sign(fp32_array[mask_denorm])
+            fp32_array[mask_denorm] = signs * fp16_min_normal
+        
+        # Now handle special values (after all other processing)
+        fp32_array[nan_mask] = 0.0  # Convert NaN to 0
+        fp32_array[posinf_mask] = fp16_max  # Convert +inf to max fp16
+        fp32_array[neginf_mask] = fp16_min  # Convert -inf to min fp16
+        
+        # Final safety clamp to ensure all values are within fp16 range
+        fp32_array = np.clip(fp32_array, fp16_min, fp16_max)
         
         # Convert to fp16
         fp16_array = fp32_array.astype(np.float16)

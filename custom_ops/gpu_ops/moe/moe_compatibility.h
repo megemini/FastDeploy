@@ -111,7 +111,7 @@
 // Compatibility function declarations
 namespace moe_compatibility {
 
-// Convert BF16 to FP16 for compatibility with improved safety
+// Convert BF16 to FP16 for compatibility with enhanced safety
 __device__ __forceinline__ __half bf16_to_fp16_compat(const moe_bfloat16_t& bf16_val) {
 #if MOE_HAS_BF16_SUPPORT
   // First convert to float32 to preserve full range
@@ -133,25 +133,27 @@ __device__ __forceinline__ __half bf16_to_fp16_compat(const moe_bfloat16_t& bf16
   
   // Check if the value is within fp16 range
   if (f32_val > fp16_max) {
-      // Use tanh-based compression for better preservation of relative magnitudes
+      // Use sigmoid-based compression for better numerical stability
       float excess = f32_val - fp16_max;
-      float normalized_excess = excess / fp16_max;  // Normalize relative to fp16_max
-      float compressed = tanhf(normalized_excess);  // Map to [0, 1) range
+      // Normalize excess values using a more stable formula
+      float normalized_excess = excess / (excess + fp16_max);  // Will be in [0, 1) range
       
-      // Use 10% of fp16 range for compressed values
-      f32_val = fp16_max * 0.9f + compressed * fp16_max * 0.1f;
+      // Map to a compressed range near fp16_max
+      f32_val = fp16_max - fp16_min_normal * (1.0f - normalized_excess);
   } else if (f32_val < fp16_min) {
       // Similar approach for negative values
       float excess = fp16_min - f32_val;
-      float normalized_excess = excess / fabsf(fp16_min);
-      float compressed = tanhf(normalized_excess);
+      float normalized_excess = excess / (excess + fabsf(fp16_min));
       
-      // Use 10% of negative fp16 range for compressed values
-      f32_val = fp16_min * 0.9f - compressed * fp16_min * 0.1f;
+      // Map to a compressed range near fp16_min
+      f32_val = fp16_min + fp16_min_normal * (1.0f - normalized_excess);
   } else if (fabsf(f32_val) < fp16_min_normal && f32_val != 0.0f) {
-      // Scale up denormals to minimum fp16 normal while preserving sign
-      f32_val = copysignf(fp16_min_normal * 0.75f, f32_val);
+      // Preserve sign but use minimum normal value
+      f32_val = copysignf(fp16_min_normal, f32_val);
   }
+  
+  // Final safety clamp
+  f32_val = fmaxf(fminf(f32_val, fp16_max), fp16_min);
   
   // Convert to fp16
   return __float2half(f32_val);
