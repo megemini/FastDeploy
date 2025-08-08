@@ -116,7 +116,8 @@ std::vector<paddle::Tensor> GQARopeWriteCacheKernel(
     const int max_seq_len,
     const std::string& cache_quant_type);
 
-std::vector<paddle::Tensor> GQARopeWriteCacheKernelWrapper(
+// CC70 compatible implementation declaration
+std::vector<paddle::Tensor> GQARopeWriteCacheKernelCC70(
     const paddle::Tensor& qkv,
     const paddle::Tensor& key_cache,
     const paddle::Tensor& value_cache,
@@ -144,6 +145,114 @@ std::vector<paddle::Tensor> GQARopeWriteCacheKernelWrapper(
     const int kv_token_num,
     const int max_seq_len,
     const std::string& cache_quant_type);
+
+// Wrapper function that dispatches to the appropriate implementation based on compute capability
+std::vector<paddle::Tensor> GQARopeWriteCacheKernelWrapper(
+    const paddle::Tensor& qkv,
+    const paddle::Tensor& key_cache,
+    const paddle::Tensor& value_cache,
+    const paddle::Tensor& cu_seqlens_q,
+    const paddle::Tensor& cu_seqlens_k,
+    const paddle::Tensor& rotary_embs,
+    const paddle::Tensor& seq_lens_this_time,
+    const paddle::Tensor& seq_lens_encoder,
+    const paddle::Tensor& seq_lens_decoder,
+    const paddle::Tensor& batch_id_per_token,
+    const paddle::Tensor& block_tables,
+    const paddle::Tensor& kv_batch_ids,
+    const paddle::Tensor& kv_tile_ids,
+    const paddle::Tensor& kv_num_blocks,
+    const paddle::Tensor& cache_batch_ids,
+    const paddle::Tensor& cache_tile_ids,
+    const paddle::Tensor& cache_num_blocks,
+    const paddle::optional<paddle::Tensor>& cache_k_quant_scales,
+    const paddle::optional<paddle::Tensor>& cache_v_quant_scales,
+    const paddle::optional<paddle::Tensor>& cache_k_dequant_scales,
+    const paddle::optional<paddle::Tensor>& cache_v_dequant_scales,
+    const paddle::optional<paddle::Tensor>& cache_k_zp,
+    const paddle::optional<paddle::Tensor>& cache_v_zp,
+    const paddle::optional<paddle::Tensor>& kv_signal_data,
+    const int kv_token_num,
+    const int max_seq_len,
+    const std::string& cache_quant_type) {
+    
+    // Get compute capability
+    int device_id;
+    cudaGetDevice(&device_id);
+    int compute_capability;
+    cudaDeviceGetAttribute(&compute_capability, cudaDevAttrComputeCapabilityMajor, device_id);
+    compute_capability = compute_capability * 10;
+    int minor;
+    cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, device_id);
+    compute_capability += minor;
+    
+    // Dispatch to appropriate implementation based on compute capability
+    if (compute_capability >= 80) {
+        // Use the original implementation for cc >= 80
+        return GQARopeWriteCacheKernel(
+            qkv,
+            key_cache,
+            value_cache,
+            cu_seqlens_q,
+            cu_seqlens_k,
+            rotary_embs,
+            seq_lens_this_time,
+            seq_lens_encoder,
+            seq_lens_decoder,
+            batch_id_per_token,
+            block_tables,
+            kv_batch_ids,
+            kv_tile_ids,
+            kv_num_blocks,
+            cache_batch_ids,
+            cache_tile_ids,
+            cache_num_blocks,
+            cache_k_quant_scales,
+            cache_v_quant_scales,
+            cache_k_dequant_scales,
+            cache_v_dequant_scales,
+            cache_k_zp,
+            cache_v_zp,
+            kv_signal_data,
+            kv_token_num,
+            max_seq_len,
+            cache_quant_type);
+    } else if (compute_capability >= 70 && compute_capability < 80) {
+        // Use the CC70 compatibility implementation for 70 <= cc < 80
+        return GQARopeWriteCacheKernelCC70(
+            qkv,
+            key_cache,
+            value_cache,
+            cu_seqlens_q,
+            cu_seqlens_k,
+            rotary_embs,
+            seq_lens_this_time,
+            seq_lens_encoder,
+            seq_lens_decoder,
+            batch_id_per_token,
+            block_tables,
+            kv_batch_ids,
+            kv_tile_ids,
+            kv_num_blocks,
+            cache_batch_ids,
+            cache_tile_ids,
+            cache_num_blocks,
+            cache_k_quant_scales,
+            cache_v_quant_scales,
+            cache_k_dequant_scales,
+            cache_v_dequant_scales,
+            cache_k_zp,
+            cache_v_zp,
+            kv_signal_data,
+            kv_token_num,
+            max_seq_len,
+            cache_quant_type);
+    } else {
+        // Throw error for unsupported compute capability
+        PD_THROW("GQARopeWriteCacheKernel requires compute capability >= 70");
+        return {};
+    }
+}
 
 // PreCacheLenConcat is available for all compute capabilities
 std::vector<paddle::Tensor>

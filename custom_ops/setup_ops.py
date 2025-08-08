@@ -407,6 +407,8 @@ elif paddle.is_compiled_with_cuda():
     if cc >= 80:
         # append_attention
         sources += ["gpu_ops/append_attention.cu"]
+        # Include gqa_rope_write_cache.cu explicitly
+        sources += ["gpu_ops/append_attn/gqa_rope_write_cache.cu"]
         # Include all other files from append_attn except pre_cache_len_concat.cu which is already included
         for file in find_end_files("gpu_ops/append_attn", ".cu"):
             if "pre_cache_len_concat.cu" not in file:
