@@ -23,8 +23,8 @@ from fastdeploy.config import get_cuda_compute_capability, get_compatible_dtype
 
 def safe_bf16_to_fp16_tensor(tensor):
     """
-    Safely convert bf16 tensor to fp16 tensor using intelligent conversion strategy.
-    This approach preserves model accuracy by using statistical analysis and gradual quantization.
+    Safely convert bf16 tensor to fp16 tensor using fp32 as intermediate format.
+    This prevents overflow issues when converting from bf16 to fp16 directly.
     
     Args:
         tensor: Input tensor (can be bf16 or other dtype)
@@ -45,7 +45,7 @@ def safe_bf16_to_fp16_tensor(tensor):
     
     # Check if the tensor is bf16
     if np_array.dtype == np.dtype('bfloat16'):
-        logger.info("Converting bf16 tensor to fp16 using intelligent conversion strategy")
+        logger.info("Converting bf16 tensor to fp16 via fp32 intermediate")
         
         # First convert to float32 to preserve full range
         fp32_array = np_array.astype(np.float32)
@@ -57,89 +57,34 @@ def safe_bf16_to_fp16_tensor(tensor):
         # Count values that need special handling
         overflow_count = np.sum(np.abs(fp32_array) > fp16_max)
         if overflow_count > 0:
-            logger.warning(f"Found {overflow_count} values that exceed fp16 range, applying intelligent conversion")
+            logger.warning(f"Found {overflow_count} values that exceed fp16 range, applying safe conversion")
+            logger.info("Applying overflow protection: scaling large values and clamping extremes")
             
-            # Statistical analysis of weight distribution
-            abs_values = np.abs(fp32_array)
-            median_val = np.median(abs_values[abs_values > 0]) if np.any(abs_values > 0) else 1.0
-            std_val = np.std(fp32_array)
+            # For values slightly above fp16 max, try to preserve some precision
+            # by scaling down proportionally
+            mask_large_pos = (fp32_array > fp16_max) & (fp32_array < 2 * fp16_max)
+            fp32_array[mask_large_pos] = fp32_array[mask_large_pos] * 0.5
             
-            logger.info(f"Weight distribution - Median: {median_val}, Std: {std_val}")
+            mask_large_neg = (fp32_array < fp16_min) & (fp32_array > -2 * fp16_max)
+            fp32_array[mask_large_neg] = fp32_array[mask_large_neg] * 0.5
             
-            # Strategy 1: For values that would overflow fp16, use logarithmic scaling
-            # This preserves relative magnitudes better than arbitrary scaling
-            mask_overflow = np.abs(fp32_array) > fp16_max
+            # For very large values, clamp to fp16 range
+            mask_overflow = np.abs(fp32_array) >= 2 * fp16_max
+            fp32_array[mask_overflow] = np.sign(fp32_array[mask_overflow]) * fp16_max
             
-            if np.any(mask_overflow):
-                # Apply logarithmic scaling to preserve relative relationships
-                overflow_vals = fp32_array[mask_overflow]
-                sign_vals = np.sign(overflow_vals)
-                log_vals = np.log10(np.abs(overflow_vals))
-                
-                # Scale logarithmically to fit within fp16 range while preserving relationships
-                # Use the median as a reference point for scaling
-                log_median = np.log10(median_val) if median_val > 0 else 0
-                scaled_log_vals = log_median + (log_vals - log_median) * 0.8  # Conservative scaling
-                
-                # Convert back from log space
-                scaled_vals = sign_vals * (10 ** scaled_log_vals)
-                
-                # Ensure we're within fp16 range
-                scaled_vals = np.clip(scaled_vals, fp16_min, fp16_max)
-                
-                fp32_array[mask_overflow] = scaled_vals
-                logger.info(f"Applied logarithmic scaling to {np.sum(mask_overflow)} overflow values")
+            # Handle special values
+            fp32_array[np.isnan(fp32_array)] = 0.0
+            fp32_array[np.isposinf(fp32_array)] = fp16_max
+            fp32_array[np.isneginf(fp32_array)] = fp16_min
             
-            # Strategy 2: Handle denormals more carefully
-            # Instead of setting to zero, use a threshold-based approach
-            fp16_min_normal = 6.103515625e-05  # Smallest normal in fp16
-            mask_denorm = np.abs(fp32_array) < fp16_min_normal
-            
-            if np.any(mask_denorm):
-                denorm_vals = fp32_array[mask_denorm]
-                
-                # For very small values, use a soft threshold approach
-                # Preserve values that are statistically significant
-                if std_val > 0:
-                    # Scale denormals based on their relative importance
-                    significance_threshold = fp16_min_normal * 0.1  # 10% of smallest normal
-                    mask_preserve = np.abs(denorm_vals) > significance_threshold
-                    
-                    if np.any(mask_preserve):
-                        # Scale up significant denormals to become normal fp16 values
-                        scale_factor = fp16_min_normal / np.median(np.abs(denorm_vals[mask_preserve]))
-                        denorm_vals[mask_preserve] = denorm_vals[mask_preserve] * scale_factor
-                    
-                    # Set truly insignificant values to zero
-                    mask_zero = ~mask_preserve
-                    denorm_vals[mask_zero] = 0.0
-                    
-                    fp32_array[mask_denorm] = denorm_vals
-                    logger.info(f"Processed {np.sum(mask_denorm)} denormal values, preserved {np.sum(mask_preserve)}")
-            
-            # Strategy 3: Handle special values more gracefully
-            mask_nan = np.isnan(fp32_array)
-            if np.any(mask_nan):
-                # Instead of setting NaNs to zero, use the median value
-                fp32_array[mask_nan] = median_val
-                logger.info(f"Replaced {np.sum(mask_nan)} NaN values with median")
-            
-            mask_posinf = np.isposinf(fp32_array)
-            if np.any(mask_posinf):
-                # Use a large but finite value instead of infinity
-                fp32_array[mask_posinf] = fp16_max * 0.99
-                logger.info(f"Replaced {np.sum(mask_posinf)} +inf values")
-            
-            mask_neginf = np.isneginf(fp32_array)
-            if np.any(mask_neginf):
-                # Use a large but finite value instead of infinity
-                fp32_array[mask_neginf] = fp16_min * 0.99
-                logger.info(f"Replaced {np.sum(mask_neginf)} -inf values")
+            # Handle denormals (values that would be denormal in fp16)
+            mask_denorm = np.abs(fp32_array) < 5.96e-8
+            fp32_array[mask_denorm] = 0.0
         
         # Convert to fp16
         fp16_array = fp32_array.astype(np.float16)
         
-        logger.info("BF16->FP16 conversion completed successfully with intelligent conversion strategy")
+        logger.info("BF16->FP16 conversion completed successfully with overflow protection")
         
         # Convert back to paddle tensor
         return paddle.to_tensor(fp16_array, place=original_place)
