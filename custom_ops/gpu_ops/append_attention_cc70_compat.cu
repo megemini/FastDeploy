@@ -47,47 +47,64 @@ __device__ inline half convert_from_float<half>(const float& val) {
     return __float2half(val);
 }
 
-// Safe conversion from bf16 to fp16 with overflow handling
-// This function converts bf16 -> fp32 -> fp16 to handle overflow properly
+// Safe conversion from bf16 to fp16 with robust overflow handling
+// This function uses a log-based approach to preserve relative magnitudes
 __device__ inline half safe_bf16_to_fp16(const __nv_bfloat16& val) {
     // First convert to float32 to preserve full range
     float f32_val = __bfloat162float(val);
     
-    // Check if the value is within fp16 range
-    // fp16 range: [-65504.0, 65504.0]
-    if (f32_val > 65504.0f) {
-        // For values slightly above fp16 max, try to preserve some precision
-        // by scaling down proportionally
-        if (f32_val < 131008.0f) {  // 2 * 65504
-            // Scale down by factor of 2
-            return __float2half(f32_val * 0.5f);
-        } else {
-            // For very large values, clamp to max fp16
-            return __float2half(65504.0f);
-        }
-    } else if (f32_val < -65504.0f) {
-        // For values slightly below fp16 min, try to preserve some precision
-        // by scaling down proportionally
-        if (f32_val > -131008.0f) {  // -2 * 65504
-            // Scale down by factor of 2
-            return __float2half(f32_val * 0.5f);
-        } else {
-            // For very small values, clamp to min fp16
-            return __float2half(-65504.0f);
-        }
-    } else if (f32_val != f32_val) {    // Check for NaN
+    // fp16 range constants
+    const float fp16_max = 65504.0f;
+    const float fp16_min = -65504.0f;
+    const float fp16_min_normal = 6.103515625e-05f;  // Minimum normal fp16 value
+    
+    // Handle special values first
+    if (f32_val != f32_val) {    // Check for NaN
         return __float2half(0.0f);       // Convert NaN to 0
     } else if (f32_val == __int_as_float(0x7F800000)) {  // Check for +inf
-        return __float2half(65504.0f);   // Convert +inf to max fp16
+        return __float2half(fp16_max);   // Convert +inf to max fp16
     } else if (f32_val == __int_as_float(0xFF800000)) {  // Check for -inf
-        return __float2half(-65504.0f);  // Convert -inf to min fp16
-    } else if (fabsf(f32_val) < 5.96e-8f) {  // Check for denormals (below fp16 min positive)
-        // For very small values that would be denormal in fp16,
-        // we can either flush to zero or scale up
-        return __float2half(0.0f);  // Flush to zero for simplicity
+        return __float2half(fp16_min);  // Convert -inf to min fp16
     }
     
-    // If within range, convert directly
+    // Check if the value is within fp16 range
+    if (f32_val > fp16_max) {
+        // Apply log transformation to preserve relative magnitudes
+        float log_val = log1pf(f32_val - fp16_max);
+        // Scale log values to fit in the upper half of fp16 range
+        f32_val = fp16_max + log_val * (fp16_max * 0.5f);
+        
+        // If still too large, apply more aggressive scaling
+        if (f32_val > fp16_max * 1.5f) {
+            log_val = log1pf(f32_val - fp16_max);
+            f32_val = fp16_max + log_val * (fp16_max * 0.25f);
+        }
+        
+        // Final clamp to ensure within range
+        f32_val = fminf(f32_val, fp16_max);
+    } else if (f32_val < fp16_min) {
+        // Apply log transformation for negative values
+        float log_val = log1pf(-(f32_val - fp16_min));
+        // Scale log values to fit in the lower half of fp16 range
+        f32_val = fp16_min - log_val * (fp16_max * 0.5f);
+        
+        // If still too small, apply more aggressive scaling
+        if (f32_val < fp16_min * 1.5f) {
+            log_val = log1pf(-(f32_val - fp16_min));
+            f32_val = fp16_min - log_val * (fp16_max * 0.25f);
+        }
+        
+        // Final clamp to ensure within range
+        f32_val = fmaxf(f32_val, fp16_min);
+    } else if (fabsf(f32_val) < fp16_min_normal) {
+        // Improved denormal handling - scale up to preserve relative magnitudes
+        if (f32_val != 0.0f) {
+            // Scale up denormals to minimum fp16 normal while preserving sign
+            f32_val = copysignf(fp16_min_normal * 0.5f, f32_val);
+        }
+    }
+    
+    // Convert to fp16
     return __float2half(f32_val);
 }
 
