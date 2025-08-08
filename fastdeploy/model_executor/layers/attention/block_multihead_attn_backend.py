@@ -197,7 +197,7 @@ class BlockAttentionBackend(AttentionBackend):
             getattr(layer, "cache_v_scale", None),
             getattr(layer, "cache_k_out_scale", None),
             getattr(layer, "cache_v_out_scale", None),
-            layer.qkv_scale,
+            layer.qkv_out_scales,
             layer.qkv_bias,
             layer.linear_shift,
             layer.linear_smooth,

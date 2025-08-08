@@ -61,7 +61,7 @@ class Attention(nn.Layer):
             v_head_dim (int, optional): The head dim of value. Defaults to -1.
             rope_type (str, optional): The type of RoPE. Defaults to "".
             qkv_bias (Optional[paddle.Tensor], optional): The bias of QKV. Defaults to None.
-            qkv_scale (Optional[paddle.Tensor], optional): The scale of QKV. Defaults to None.
+            qkv_out_scales (Optional[paddle.Tensor], optional): The output scales of QKV. Defaults to None.
             prefix (str, optional): The name of current layer. Defaults to "".
             linear_shift (Optional[paddle.Tensor], optional): The shift of linear. Defaults to None.
             linear_smooth (Optional[paddle.Tensor], optional): The smooth of linear. Defaults to None.

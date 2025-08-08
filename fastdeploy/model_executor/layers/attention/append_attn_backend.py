@@ -284,7 +284,7 @@ class AppendAttentionBackend(AttentionBackend):
             metadata.rotary_embs,
             metadata.attn_mask,
             layer.qkv_bias,
-            layer.qkv_scale,
+            layer.qkv_out_scales,
             getattr(layer, "cache_k_scale", None),
             getattr(layer, "cache_v_scale", None),
             getattr(layer, "cache_k_out_scale", None),
