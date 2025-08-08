@@ -63,8 +63,8 @@ class Attention(nn.Layer):
             qkv_bias (Optional[paddle.Tensor], optional): The bias of QKV. Defaults to None.
             qkv_out_scales (Optional[paddle.Tensor], optional): The output scales of QKV. Defaults to None.
             prefix (str, optional): The name of current layer. Defaults to "".
-            linear_shift (Optional[paddle.Tensor], optional): The shift of linear. Defaults to None.
-            linear_smooth (Optional[paddle.Tensor], optional): The smooth of linear. Defaults to None.
+            out_linear_shifts (Optional[paddle.Tensor], optional): The shift of output linear. Defaults to None.
+            out_linear_smooths (Optional[paddle.Tensor], optional): The smooth of output linear. Defaults to None.
             use_qk_norm (bool, optional): Whether to apply rmsnorm on QA after rope. Defaults to False.
             rms_norm_eps (float, optional): The epsilon of RMSNorm. Defaults to 1e-6.
 
