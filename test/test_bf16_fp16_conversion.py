@@ -27,10 +27,10 @@ def test_bf16_to_fp16_conversion():
     # Normal range values with fine granularity
     normal_values = np.linspace(-100.0, 100.0, 200).astype(np.float32)
     
-    # Values near fp16 limits
+    # Values near fp16 limits with precise boundary testing
     near_limit_values = np.array([
-        65500.0, 65503.0, 65504.0, 65505.0, 65510.0,
-        -65500.0, -65503.0, -65504.0, -65505.0, -65510.0
+        65490.0, 65495.0, 65499.0, 65500.0, 65501.0, 65502.0, 65503.0, 65504.0, 65505.0, 65510.0,
+        -65490.0, -65495.0, -65499.0, -65500.0, -65501.0, -65502.0, -65503.0, -65504.0, -65505.0, -65510.0
     ], dtype=np.float32)
     
     # Large values beyond fp16 range (with more gradual scaling)

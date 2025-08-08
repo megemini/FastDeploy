@@ -32,57 +32,47 @@ typedef __half float16_t;
 typedef cudaStream_t gpuStream_t;
 #endif
 
-// Safe conversion from bf16 to fp16 with enhanced robust overflow handling
-// This function uses a sigmoid-based approach for better numerical stability
+// Safe conversion from bf16 to fp16 with precision-optimized handling
+// This function uses a boundary-aware approach for maximum numerical stability
 __device__ inline half safe_bf16_to_fp16(const __nv_bfloat16& val) {
     // First convert to float32 to preserve full range
     float f32_val = __bfloat162float(val);
     
-    // fp16 range constants
+    // fp16 range constants with safety margins
     const float fp16_max = 65504.0f;
     const float fp16_min = -65504.0f;
+    const float fp16_safe_max = 65500.0f;  // Slightly below max to avoid rounding issues
+    const float fp16_safe_min = -65500.0f;
     const float fp16_min_normal = 6.103515625e-05f;  // Minimum normal fp16 value
+    const float fp16_min_subnormal = 5.960464e-08f;  // Smallest representable subnormal fp16
     
     // Handle special values first
     if (f32_val != f32_val) {    // Check for NaN
         return __float2half(0.0f);       // Convert NaN to 0
     } else if (f32_val == __int_as_float(0x7F800000)) {  // Check for +inf
-        return __float2half(fp16_max);   // Convert +inf to max fp16
+        return __float2half(fp16_safe_max);   // Convert +inf to safe max fp16
     } else if (f32_val == __int_as_float(0xFF800000)) {  // Check for -inf
-        return __float2half(fp16_min);   // Convert -inf to min fp16
+        return __float2half(fp16_safe_min);   // Convert -inf to safe min fp16
     }
     
-    // Check if the value is within fp16 range
-    if (f32_val > fp16_max) {
-        // Use sigmoid-based compression for better numerical stability
-        // This maps any positive value to a compressed range near fp16_max
-        float excess = f32_val - fp16_max;
-        // Normalize excess values using a more stable formula
-        float normalized_excess = excess / (excess + fp16_max);  // Will be in [0, 1) range
-        
-        // Map to a compressed range near fp16_max
-        // This ensures values very close to fp16_max stay close
-        f32_val = fp16_max - fp16_min_normal * (1.0f - normalized_excess);
-        
-        // Final safety clamp
-        f32_val = fminf(f32_val, fp16_max);
-    } else if (f32_val < fp16_min) {
-        // Similar approach for negative values
-        float excess = fp16_min - f32_val;
-        float normalized_excess = excess / (excess + fabsf(fp16_min));
-        
-        // Map to a compressed range near fp16_min
-        f32_val = fp16_min + fp16_min_normal * (1.0f - normalized_excess);
-        
-        // Final safety clamp
-        f32_val = fmaxf(f32_val, fp16_min);
-    } else if (fabsf(f32_val) < fp16_min_normal) {
-        // Improved denormal handling - preserve sign but use minimum normal value
+    // Check if the value is within fp16 safe range
+    if (f32_val > fp16_safe_max) {
+        // Map directly to safe max value to avoid overflow
+        f32_val = fp16_safe_max;
+    } else if (f32_val < fp16_safe_min) {
+        // Map directly to safe min value to avoid overflow
+        f32_val = fp16_safe_min;
+    } else if (fabsf(f32_val) < fp16_min_subnormal) {
+        // Handle extremely small values (below smallest subnormal)
         if (f32_val != 0.0f) {
-            // Set to minimum normal fp16 value while preserving sign
-            f32_val = copysignf(fp16_min_normal, f32_val);
+            // Set to smallest subnormal fp16 value while preserving sign
+            f32_val = copysignf(fp16_min_subnormal, f32_val);
         }
     }
+    // Values between fp16_min_subnormal and fp16_min_normal will be preserved as subnormals
+    
+    // Final safety clamp to ensure all values are within fp16 safe range
+    f32_val = fmaxf(fminf(f32_val, fp16_safe_max), fp16_safe_min);
     
     // Convert to fp16
     return __float2half(f32_val);
